@@ -707,115 +707,21 @@ __global__ void solve_leaf_kernel(Net* nets, int net_count, const int* xs,
   nets[id].tree_length = tree_wirelength(trees + tree_offsets[id], nets[id].degree);
 }
 
-// The following helpers are a storage-free translation of the candidate-break
-// scoring portion of flute::flutes_MD().  Recomputing a score scans one subnet
-// instead of allocating FLUTE's per-recursion scratch arrays, keeping every
-// task independent and therefore levelizable.  This is the 'recompute' score
-// mode, retained for A/B validation; the default 'precompute' mode gets the
-// same independence from per-subnet scratch slices instead (see
-// precompute_break_arrays below) because recomputation is O(d^2) per
-// candidate and unusable for 1000+-pin nets.
 __device__ inline int inverse_s(const int* s, int d, int x_rank) {
   for (int i = 0; i < d; ++i)
     if (s[i] == x_rank) return i;
   return -1;
 }
 
-__device__ inline float penalty_at(const int* xs, const int* ys, const int* s,
-                                   int d, int x_rank) {
-  const float ccc = fmaxf(0.41f - 0.005f * d, 0.1f);
-  const float dx = ccc * (xs[d - 2] - xs[1]) / (d - 3);
-  const float dy = ccc * (ys[d - 2] - ys[1]) / (d - 3);
-  float penalty = 0.0f;
-  float value = 0.0f;
-  for (int r = d / 2; r >= 2; --r, penalty += dx) {
-    if (x_rank == r || x_rank == d - 1 - r) value += penalty;
-  }
-  if (x_rank == 0 || x_rank == 1 || x_rank == d - 2 || x_rank == d - 1)
-    value += penalty;
-  penalty = dy;
-  for (int r = d / 2 - 1; r >= 2; --r, penalty += dy) {
-    if (x_rank == s[r] || x_rank == s[d - 1 - r]) value += penalty;
-  }
-  if (x_rank == s[0] || x_rank == s[1] ||
-      x_rank == s[d - 2] || x_rank == s[d - 1]) value += penalty;
-  return value;
-}
-
-__device__ inline float dist_x_at(const int* xs, const int* s, int d, int p) {
-  int lo = s[0], hi = s[0];
-  for (int r = 1; r <= p; ++r) {
-    lo = min(lo, s[r]);
-    hi = max(hi, s[r]);
-  }
-  float value = xs[hi] - xs[lo];
-  lo = s[p];
-  hi = s[p];
-  for (int r = p + 1; r < d; ++r) {
-    lo = min(lo, s[r]);
-    hi = max(hi, s[r]);
-  }
-  return value + xs[hi] - xs[lo];
-}
-
-__device__ inline float dist_y_at(const int* xs, const int* ys, const int* s,
-                                  int d, int p) {
-  const int yp = inverse_s(s, d, p);
-  int lo = inverse_s(s, d, 0), hi = lo;
-  for (int x = 1; x <= p; ++x) {
-    const int y = inverse_s(s, d, x);
-    lo = min(lo, y);
-    hi = max(hi, y);
-  }
-  float value = ys[hi] - ys[lo] + (xs[d - 1] - xs[0]) - (ys[d - 1] - ys[0]);
-  lo = yp;
-  hi = yp;
-  for (int x = p + 1; x < d; ++x) {
-    const int y = inverse_s(s, d, x);
-    lo = min(lo, y);
-    hi = max(hi, y);
-  }
-  return value + ys[hi] - ys[lo];
-}
-
-__device__ inline float break_score(const Net& net, const int* all_xs,
-                                    const int* all_ys, const int* all_s,
-                                    int candidate) {
-  const int d = net.degree;
-  const int* xs = all_xs + net.pin_offset;
-  const int* ys = all_ys + net.pin_offset;
-  const int* s = all_s + net.pin_offset;
-  const int lb = max((d - net.acc) / 5, 2);
-  const int p = candidate / 2 + lb;
-  constexpr float aa = 0.6f;
-  constexpr float bb = 0.3f;
-  const float ddd = 4.8f / (d - 1);
-  if ((candidate & 1) == 0) {  // break in x
-    const int si = inverse_s(s, d, p);
-    const float side = (si <= 1) ? aa * (ys[2] - ys[1]) :
-                       (si >= d - 2) ? aa * (ys[d - 2] - ys[d - 3]) :
-                       bb * (ys[si + 1] - ys[si - 1]);
-    return (xs[p + 1] - xs[p - 1]) - penalty_at(xs, ys, s, d, p) - side -
-           ddd * dist_y_at(xs, ys, s, d, p);
-  }
-  const int x_rank = s[p];  // break in y
-  const float side = (x_rank <= 1) ? aa * (xs[2] - xs[1]) :
-                     (x_rank >= d - 2) ? aa * (xs[d - 2] - xs[d - 3]) :
-                     bb * (xs[x_rank + 1] - xs[x_rank - 1]);
-  return (ys[p + 1] - ys[p - 1]) - penalty_at(xs, ys, s, d, x_rank) - side -
-         ddd * dist_x_at(xs, s, d, p);
-}
-
 // Storage-backed replica of the per-recursion score inputs in
 // flute::flutes_MD(): the inverse permutation si[], penalty[], distx[] and
 // disty[] are computed once per subnet in O(d), so every candidate score
-// afterwards is O(1).  The storage-free break_score() path above recomputes
-// dist_y per candidate through inverse_s() linear scans, which is O(d^2) per
-// candidate and O(d^3) per subnet on a single thread -- fine for the degree
-// <= 51 nets the GPU-FLUTE paper evaluates, but a 2153-pin net (bsg_chip)
-// turns that into a ~100s kernel.  Float operation order below deliberately
-// mirrors penalty_at()/dist_x_at()/dist_y_at() so both score modes stay
-// bit-identical and therefore produce the same trees.
+// afterwards is O(1).  The original storage-free translation recomputed
+// dist_y per candidate through inverse_s() linear scans instead, which is
+// O(d^2) per candidate and O(d^3) per subnet on a single thread -- fine for
+// the degree <= 51 nets the GPU-FLUTE paper evaluates, but a 2153-pin net
+// (bsg_chip) turned that into a ~100s kernel.  Float operation order below
+// deliberately mirrors flute::flutes_MD() so the trees stay identical.
 __device__ inline void precompute_break_arrays(const Net& net, const int* all_xs,
                                                const int* all_ys, const int* all_s,
                                                int* all_si, float* all_penalty,
@@ -831,9 +737,9 @@ __device__ inline void precompute_break_arrays(const Net& net, const int* all_xs
 
   for (int r = 0; r < d; ++r) si[s[r]] = r;
 
-  // penalty[]: identical accumulation sequence to penalty_at().  The middle
-  // ranks are written twice by the x loop; the overwrite equals penalty_at's
-  // running sum because the first write is always the 0.0f loop start.
+  // penalty[]: identical accumulation sequence to flute::flutes_MD().  The
+  // middle ranks are written twice by the x loop; the overwrite equals the
+  // reference running sum because the first write is always the 0.0f start.
   const float ccc = fmaxf(0.41f - 0.005f * d, 0.1f);
   const float dx = ccc * (xs[d - 2] - xs[1]) / (d - 3);
   const float dy = ccc * (ys[d - 2] - ys[1]) / (d - 3);
@@ -879,8 +785,8 @@ __device__ inline void precompute_break_arrays(const Net& net, const int* all_xs
   }
 }
 
-// O(1) counterpart of break_score() over the precomputed arrays.  The final
-// expression keeps break_score's exact left-to-right float order.
+// One candidate score in O(1) over the precomputed arrays.  The final
+// expression keeps flute::flutes_MD()'s exact left-to-right float order.
 __device__ inline float break_score_pre(const Net& net, const int* all_xs,
                                         const int* all_ys, const int* all_s,
                                         const int* all_si, const float* all_penalty,
@@ -972,8 +878,6 @@ __global__ void estimate_break_kernel(Net* level, int count, const int* xs,
   atomicExch(has_high_degree, 1);
 }
 
-// score_si == nullptr selects the original storage-free break_score() path;
-// otherwise scores come from the precomputed arrays in O(1) each.
 __device__ inline int kth_candidate(const Net& net, const int* xs,
                                     const int* ys, const int* s,
                                     const int* score_si, const float* score_penalty,
@@ -994,10 +898,8 @@ __device__ inline int kth_candidate(const Net& net, const int* xs,
     top_ids[i] = INT_MAX;
   }
   for (int candidate = 0; candidate < total; ++candidate) {
-    const float score = score_si != nullptr
-        ? break_score_pre(net, xs, ys, s, score_si, score_penalty,
-                          score_distx, score_disty, candidate)
-        : break_score(net, xs, ys, s, candidate);
+    const float score = break_score_pre(net, xs, ys, s, score_si, score_penalty,
+                                        score_distx, score_disty, candidate);
     int insert = keep;
     for (int i = 0; i < keep; ++i) {
       if (score > top_scores[i] ||
@@ -1034,7 +936,7 @@ __global__ void break_kernel(Net* level, int count, const int* net_offsets,
   // Heuristic candidates are the only consumers of break scores; the two
   // provably optimal direct breaks never evaluate them.  Subnet pin ranges
   // are disjoint within a level, so the scratch slices race with nobody.
-  if (score_si != nullptr && !direct_kind)
+  if (!direct_kind)
     precompute_break_arrays(parent, xs, ys, s, score_si, score_penalty,
                             score_distx, score_disty);
   parent.child_begin = net_offsets[id];
@@ -1359,8 +1261,7 @@ inline Result solve_high_degree(const std::vector<int>& host_net_ids,
                                 int grid_x, int grid_y, int accuracy = 3,
                                 bool capture_root_hanan = false,
                                 bool collect_profile = false,
-                                bool compute_tree_centers = false,
-                                bool score_precompute = true) {
+                                bool compute_tree_centers = false) {
   Result result;
   Profile* profile = collect_profile ? &result.profile : nullptr;
   const auto host_start = std::chrono::steady_clock::now();
@@ -1442,16 +1343,14 @@ inline Result solve_high_degree(const std::vector<int>& host_net_ids,
     float* score_penalty = nullptr;
     float* score_distx = nullptr;
     float* score_disty = nullptr;
-    if (score_precompute) {
-      check(cudaMalloc(&score_si, sizeof(int) * current.pin_count),
-            "allocate score si scratch");
-      check(cudaMalloc(&score_penalty, sizeof(float) * current.pin_count),
-            "allocate score penalty scratch");
-      check(cudaMalloc(&score_distx, sizeof(float) * current.pin_count),
-            "allocate score distx scratch");
-      check(cudaMalloc(&score_disty, sizeof(float) * current.pin_count),
-            "allocate score disty scratch");
-    }
+    check(cudaMalloc(&score_si, sizeof(int) * current.pin_count),
+          "allocate score si scratch");
+    check(cudaMalloc(&score_penalty, sizeof(float) * current.pin_count),
+          "allocate score penalty scratch");
+    check(cudaMalloc(&score_distx, sizeof(float) * current.pin_count),
+          "allocate score distx scratch");
+    check(cudaMalloc(&score_disty, sizeof(float) * current.pin_count),
+          "allocate score disty scratch");
     break_kernel<<<blocks(current.net_count), kBlockSize>>>(
         current.nets, current.net_count, net_offsets, pin_offsets, current.xs,
         current.ys, current.s, next.nets, next.xs, next.ys, next.s,

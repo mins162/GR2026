@@ -168,7 +168,7 @@ void Lshape_route(vector<int> &nets2route) {
 
     if(LOG) printf("[%5.1f] Stage 1 initial routing: RSMT (CPU/GPU FLUTE) starts\n", elapsed_time());
     const bool use_gpu_flute = gpu_flute_enabled();
-    const int gpu_min_degree = gpu_flute_min_degree();
+    const int gpu_min_degree = GPU_FLUTE_MIN_DEGREE;
     vector<int> gpu_flute_nets;
     gpu_flute_nets.reserve(nets2route.size() / 100);
     int cpu_flute_net_count = 0;

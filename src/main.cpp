@@ -86,11 +86,9 @@ void runtime_breakdown() {
     if(!cudb::gpu_flute_enabled())
         snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "off");
     else if(cudb::gpu_flute_max_degree() == INT_MAX)
-        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (score=%s)",
-                 cudb::gpu_flute_score_precompute() ? "precompute" : "recompute");
+        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on");
     else
-        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (score=%s, max-degree=%d)",
-                 cudb::gpu_flute_score_precompute() ? "precompute" : "recompute",
+        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (max-degree=%d)",
                  cudb::gpu_flute_max_degree());
     printf("\nconfig: gpu-flute=%s | wcost-presum-fusion=%s | incremental-vcost=%s (dirty limit %.0f%%) | "
            "incremental-presum=%s | tree-center=%s\n",

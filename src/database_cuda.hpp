@@ -102,49 +102,21 @@ bool gpu_flute_enabled() {
     return value == nullptr || string(value) != "0";
 }
 
-// GPU receives nets whose pin degree is at least this value.  The default
-// preserves the original split: CPU degree <= DEGREE (9), GPU degree >= 10.
-int gpu_flute_min_degree() {
-    static const int min_degree = [] {
-        const char *value = getenv("INSTANTGR_GPU_FLUTE_MIN_DEGREE");
-        if(value == nullptr || *value == '\0') return DEGREE + 1;
-        char *end = nullptr;
-        const long parsed = strtol(value, &end, 10);
-        if(*end != '\0' || parsed < DEGREE + 1 || parsed > INT_MAX)
-            throw invalid_argument("INSTANTGR_GPU_FLUTE_MIN_DEGREE must be an integer >= " +
-                                   to_string(DEGREE + 1));
-        return static_cast<int>(parsed);
-    }();
-    return min_degree;
-}
-
-// GPU-FLUTE break-score mode.  'precompute' (default) builds flutes_MD's
-// si/penalty/distx/disty arrays once per subnet in O(d) and scores each break
-// candidate in O(1).  'recompute' is the original storage-free rescan kept
-// for A/B validation; it is O(d^2) per candidate on one thread and collapses
-// on very high degree nets (bsg_chip's 2153-pin net costs ~100s).  Both
-// modes produce bit-identical scores and therefore identical trees.
-bool gpu_flute_score_precompute() {
-    static const bool precompute = [] {
-        const char *value = getenv("INSTANTGR_GPU_FLUTE_SCORE");
-        if(value == nullptr || *value == '\0' || string(value) == "precompute") return true;
-        if(string(value) == "recompute") return false;
-        throw invalid_argument("INSTANTGR_GPU_FLUTE_SCORE must be 'precompute' or 'recompute'");
-    }();
-    return precompute;
-}
+// GPU receives nets whose pin degree is at least this value: the original
+// split, CPU degree <= DEGREE (9), GPU degree >= 10.
+constexpr int GPU_FLUTE_MIN_DEGREE = DEGREE + 1;
 
 // Escape hatch for pathological roots: nets above this degree skip GPU-FLUTE
 // and take the original CPU FLUTE path (its MAXD is 10000).  Unset or 0
-// disables the cap.  Kept as an experiment knob; the precompute score mode
-// is the intended fix for huge nets.
+// disables the cap.  Kept as an experiment knob; the O(1) precomputed break
+// scores are the intended fix for huge nets.
 int gpu_flute_max_degree() {
     static const int max_degree = [] {
         const char *value = getenv("INSTANTGR_GPU_FLUTE_MAX_DEGREE");
         if(value == nullptr || *value == '\0' || string(value) == "0") return INT_MAX;
         char *end = nullptr;
         const long parsed = strtol(value, &end, 10);
-        if(*end != '\0' || parsed < gpu_flute_min_degree() || parsed > INT_MAX)
+        if(*end != '\0' || parsed < GPU_FLUTE_MIN_DEGREE || parsed > INT_MAX)
             throw invalid_argument("INSTANTGR_GPU_FLUTE_MAX_DEGREE must be 0 (off) or an integer >= "
                                    "the GPU-FLUTE minimum degree");
         return static_cast<int>(parsed);
@@ -154,7 +126,7 @@ int gpu_flute_max_degree() {
 
 // One predicate for both stages' CPU/GPU net partition.
 bool gpu_flute_takes_degree(int degree) {
-    return degree >= gpu_flute_min_degree() && degree <= gpu_flute_max_degree();
+    return degree >= GPU_FLUTE_MIN_DEGREE && degree <= gpu_flute_max_degree();
 }
 
 bool gpu_flute_profile_enabled() {
@@ -189,7 +161,7 @@ bool cpu_tree_center_enabled() {
 int cpu_tree_center_min_degree() {
     static const int min_degree = [] {
         const char *value = getenv("INSTANTGR_TREE_CENTER_MIN_DEGREE");
-        if(value == nullptr || *value == '\0') return gpu_flute_min_degree();
+        if(value == nullptr || *value == '\0') return GPU_FLUTE_MIN_DEGREE;
         char *end = nullptr;
         const long parsed = strtol(value, &end, 10);
         if(*end != '\0' || parsed < 2 || parsed > INT_MAX)
@@ -518,8 +490,7 @@ void construct_rsmt_gpu(vector<int> &net_ids) {
                                                 pin_acc_num, pins,
                                                 flute_x_coords, flute_y_coords,
                                                 X, Y, 3, validate, profile,
-                                                use_gpu_tree_center,
-                                                gpu_flute_score_precompute());
+                                                use_gpu_tree_center);
     const double solve_end_time = elapsed_time();
     assert(result.net_ids.size() == result.tree_offsets.size() - 1);
     int mismatch_count = 0;
@@ -607,7 +578,7 @@ void construct_rsmt_gpu(vector<int> &net_ids) {
     if(profile) {
         const double rebuild_time = elapsed_time() - solve_end_time;
         printf("GPU-FLUTE profile: nets=%zu, degree >= %d\n",
-               result.net_ids.size(), gpu_flute_min_degree());
+               result.net_ids.size(), GPU_FLUTE_MIN_DEGREE);
         printf("  solve wall time: %.3fs, host tree rebuild: %.3fs\n",
                result.profile.host_wall_seconds, rebuild_time);
         const double solve_wall = result.profile.host_wall_seconds;
