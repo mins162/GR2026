@@ -5,7 +5,7 @@
 - 셸 : tcsh
 - 리포지토리 : `/home/shkim/6_Internship/mskim/InstantGR`
 - 벤치마크 : `/home/shkim/6_Internship/mskim/benchmarks/benchmarks`
-- 벤치마크 다운로드 : <https://drive.google.com/drive/folders/1afrsbeS_KuSeHEVfuQOuLWPuuZqlDVlw?hl=ko>
+- 벤치마크 다운로드 : [Google Drive](https://drive.google.com/drive/folders/1afrsbeS_KuSeHEVfuQOuLWPuuZqlDVlw?hl=ko)
 - GPU : TITAN RTX → `-arch=sm_75`
 
 ---

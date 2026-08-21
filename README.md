@@ -23,7 +23,7 @@ Optimizing InstantGR for faster global routing.
 - 모든 명령 : 리포지토리 루트 기준 상대 경로
 - `$BENCH` : `.cap` / `.net` 벤치마크 디렉터리
 - `$ARCH` : GPU 아키텍처 (TITAN RTX → `sm_75`)
-- 벤치마크 다운로드 : <https://drive.google.com/drive/folders/1afrsbeS_KuSeHEVfuQOuLWPuuZqlDVlw?hl=ko>
+- 벤치마크 다운로드 : [Google Drive](https://drive.google.com/drive/folders/1afrsbeS_KuSeHEVfuQOuLWPuuZqlDVlw?hl=ko)
 
 ```bash
 setenv BENCH /path/to/benchmarks
