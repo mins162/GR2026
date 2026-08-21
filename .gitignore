@@ -1,2 +1,25 @@
+# OS
 .DS_Store
 **/.DS_Store
+
+# 빌드 산출물 (nvcc/g++ 결과 — 소스에서 재생성)
+run/InstantGR
+run/InstantGR.*
+baseline/run/InstantGR
+baseline/run/InstantGR.*
+*.o
+
+# 실행 결과 (라우팅 출력 / 로그 / 프로파일)
+*.out
+*.log
+run/*.eval
+baseline/run/*.eval
+rsmt_depth_profile.csv
+
+# A/B 스크립트가 만드는 결과 디렉터리
+ab_results_*/
+
+# 에디터
+.vscode/
+.idea/
+*.swp
