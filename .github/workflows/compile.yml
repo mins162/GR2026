@@ -1,0 +1,57 @@
+# GPU 없이 "컴파일이 깨지지 않는지"만 확인하는 CI.
+# GitHub 러너에는 NVIDIA GPU가 없으므로 실행/벤치마크는 하지 않는다.
+# nvcc는 -arch로 타겟을 명시하면 GPU를 조회하지 않고 코드 생성만 하므로 컴파일은 가능하다.
+name: compile
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  cuda:
+    name: nvcc (${{ matrix.target }}, ${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    # devel 이미지에는 nvcc와 CUDA 헤더가 모두 들어있다 (GPU 불필요).
+    container: nvidia/cuda:12.5.1-devel-ubuntu24.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - opt        # src/ → 최적화 버전
+          - baseline   # baseline/src/ → 논문 baseline
+        arch:
+          - sm_75      # TITAN RTX, 실제 사용 GPU
+          - sm_86      # 다른 아키텍처에서도 코드 생성이 되는지 확인
+        include:
+          - target: opt
+            srcdir: src
+            outfile: InstantGR.opt
+          - target: baseline
+            srcdir: baseline/src
+            outfile: InstantGR
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: nvcc 버전 확인
+        run: nvcc --version
+
+      - name: 컴파일
+        working-directory: ${{ matrix.srcdir }}
+        run: |
+          nvcc main.cpp -o /tmp/${{ matrix.outfile }} \
+            -std=c++17 -x cu -O3 -arch=${{ matrix.arch }}
+
+  evaluator:
+    name: g++ (evaluator)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 컴파일
+        working-directory: run
+        run: g++ -O3 -std=c++17 -o /tmp/evaluator evaluator.cpp
