@@ -62,22 +62,25 @@ constexpr int kMaxBlocks = 8192;
 
 // Wavefront bounds.  It is retuned every round from the assignment rate, so
 // these only have to be wide enough to bracket the batch sizes of both stages
-// (stage 1 averages ~4k nets per batch, stage 2 ~230).  The floor keeps the
-// tail of a run from running rounds too small to be worth their launch.
-constexpr int kMinWavefront = 1024;
-
-// Lanes that scan the open batches for one net.  The scan is a chain of
-// dependent loads -- test a batch, and only then move to the next -- so one
-// thread per net leaves the memory latency fully exposed, whatever the
-// wavefront is.  A warp per net tests 32 batches at a time instead.
+// (stage 1 averages ~4k nets per batch, stage 2 ~230).  The floor is in nets,
+// and a net is a warp, so 256 of them still fill 8k threads.
+constexpr int kMinWavefront = 256;
 constexpr int kMaxWavefront = 1 << 18;
 constexpr int kInitialWavefront = 1 << 14;
 
 // Open batches to keep live.  More of them means fewer batches retired early,
 // at one bitmap per batch; the ring is sized from this budget and the grid.
-constexpr size_t kRingBudgetBytes = 1ull << 30;
+// The largest ISPD design wants ~500 batches of a 20.6M-cell grid, which is
+// 1.2GB of bitmap, so the budget has to reach that to avoid retiring batches
+// the remaining nets could still have used.
+constexpr size_t kRingBudgetBytes = 2ull << 30;
 constexpr int kMinRingSlots = 8;
 constexpr int kMaxRingSlots = 4096;
+
+// Lanes that scan the open batches for one net.  The scan is a chain of
+// dependent loads -- test a batch, and only then move to the next -- so one
+// thread per net leaves the memory latency fully exposed, whatever the
+// wavefront is.  A warp per net tests 32 batches at a time instead.
 constexpr int kPickLanes = 32;
 
 enum : unsigned char {
@@ -315,7 +318,7 @@ inline bool generate(const HostMarks &marks, int net_cnt, int X, int Y, int max_
 
     size_t free_bytes = 0, total_bytes = 0;
     check(cudaMemGetInfo(&free_bytes, &total_bytes), "memory query");
-    const size_t budget = std::min<size_t>(kRingBudgetBytes, free_bytes / 8);
+    const size_t budget = std::min<size_t>(kRingBudgetBytes, free_bytes / 4);
     const int ring = (int)std::max<size_t>(
         kMinRingSlots, std::min<size_t>(kMaxRingSlots, budget / (words * sizeof(unsigned))));
 

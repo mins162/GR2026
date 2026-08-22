@@ -10,7 +10,7 @@
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
 | 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
 | 3 | vcost / presum 계산 절감 | runtime·품질 양호, 시간 측정 방식 재검토 후 재측정 예정 | 2026-08-20 |
-| 4 | GPU batch generation | `mempool_group` S1 −70% / S2 −52%, 전체 −11.9% | 2026-08-22 |
+| 4 | GPU batch generation | `mempool_group` 전체 −11.9%, `mempool_cluster_ranking` −5.9% | 2026-08-22 |
 
 ---
 
@@ -238,10 +238,31 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 - ISPD score 397,595,645 — 노이즈 수준 (슬라이드 기준 397,601,526)
 - 라운드당 비용 : S2 기준 5.07ms → **0.62ms**
 
+### 결과 — `mempool_cluster_ranking` (main 대비, 같은 머신 상태)
+
+| 구간 | main | GPU batch gen | 개선 |
+| --- | --- | --- | --- |
+| S1 batch generation | 16.33s | **6.68s** | −59% |
+| S2 batch generation | 14.56s | **14.23s** | −2% |
+| S2 GPU route | 20.75s | 22.11s | +1.36s (batch 474 vs 461) |
+| 전체 runtime | 133.25s | **125.36s** | −5.9% |
+
+- ISPD score 1,781,089,663 vs main 1,780,725,674 (+0.02%, 노이즈)
+- **주의** : 이 서버는 공유라 다른 사용자와 겹치면 호스트 구간이 크게 흔들립니다. 실제로 같은 코드·같은 입력(Stage 1 결과가 자릿수까지 동일)인데 S2 preprocessing이 5.60s ↔ 19.19s로 3.4배 차이 난 실행이 있었습니다. 비교는 반드시 **연속 실행**으로
+
+### 5차 : 큰 디자인의 Stage 2
+
+`mempool_cluster_ranking`의 S2만 이득이 없었고, 로그에 원인이 그대로 나왔습니다.
+
+- `retired 101` — grid 20.6M 셀 → bitmap 하나가 2.58MB, 1GB 예산이면 ring이 374개인데 batch는 474개 필요 → 100개를 조기에 닫아 batch 수가 늘고(474 vs CPU 461) 그만큼 S2 GPU route가 +1.36s
+  - → ring 예산 1GB → **2GB** (`free/8` → `free/4`)
+- `16.8 commits per net` — wavefront 하한 1024에 배정이 라운드당 62개뿐이라 커밋의 94%가 헛일
+  - → net당 warp로 바꾼 뒤론 256 net이면 이미 8k 스레드 → 하한 **1024 → 256**
+
 ### 다음 작업
 
-- `mempool_cluster_ranking` 측정 (owner map `X*Y` int, ring bitmap 메모리 여유 확인)
-- `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 4차 구조 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
+- 5차 서버 재측정 (`mempool_cluster_ranking` 우선, `retired`가 0인지 확인)
+- `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
 
