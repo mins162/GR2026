@@ -165,7 +165,7 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 | S1 batch generation | 3.15s | **5.51s** |
 | S2 batch generation | 3.50s | **12.93s** |
 
-(2차 구조 실측은 S1 3.44s / S2 13.41s — 아래 3차 참고)
+(구조 개선 실측 : 2차 S1 3.44 / S2 13.41s, 3차 S1 3.62 / S2 13.68s — 아래 3·4차 참고)
 
 - 원인 : net 하나가 "자기가 최종적으로 들어갈 batch 번호"만큼 full commit을 반복
   - S2는 net 197k에 batch 869개 → net당 평균 **~430회** commit, 거기에 batch당 commit-check 라운드 5.1회가 곱해짐
@@ -211,9 +211,23 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 - 폴백 : GPU 메모리 부족·이상 상황이면 경고를 찍고 CPU 경로로 자동 복귀
 - 로그 : `rounds N, X commits per net, wavefront W, K batches open at once (R retired early)`
 
+### 4차 : net당 warp
+
+3차 실측에서도 S2는 13.68s로 그대로였습니다 (S1 3.62s). 라운드당 **5.07ms** — thrust 제거로는 안 움직였으니 원인은 커널 안이었습니다.
+
+- 원인 : **커널이 net당 스레드 1개**. wavefront 1024면 스레드가 32워프뿐이라 (TITAN RTX는 SM만 72개) 지연이 하나도 안 숨겨짐
+  - pick : net 하나가 열린 batch 871개를 **순차 의존 체인**으로 훑음 → 스레드당 수천 번의 dependent load
+  - commit / check / release : augmented DAG net은 mark가 수백~수천 개인데 그걸 스레드 하나가 다 순회
+- 조치 : pick / commit / check / stamp / release 전부 **net당 warp(32 레인)**
+  - pick : 레인이 batch 32개를 동시에 테스트하고 `__ballot_sync`로 가장 낮은 빈 batch 선택 → 체인 길이 1/32
+  - commit / stamp / release : 레인이 net의 segment·point를 나눠 처리 (전부 순서 무관 연산이라 결과 동일)
+  - check : 레인이 point를 나눠 검사하고 ballot으로 합침
+  - wavefront 1024 → 스레드 32k
+- `kPickLanes = 1`로 두면 기존 순차 동작과 동일 — 호스트 시뮬레이션은 이 설정으로 검증
+
 ### 다음 작업
 
-- **3차 구조 서버 A/B 재측정** (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
+- **4차 구조 서버 A/B 재측정** (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
 

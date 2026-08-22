@@ -65,6 +65,11 @@ constexpr int kMaxBlocks = 8192;
 // (stage 1 averages ~4k nets per batch, stage 2 ~230).  The floor keeps the
 // tail of a run from running rounds too small to be worth their launch.
 constexpr int kMinWavefront = 1024;
+
+// Lanes that scan the open batches for one net.  The scan is a chain of
+// dependent loads -- test a batch, and only then move to the next -- so one
+// thread per net leaves the memory latency fully exposed, whatever the
+// wavefront is.  A warp per net tests 32 batches at a time instead.
 constexpr int kMaxWavefront = 1 << 18;
 constexpr int kInitialWavefront = 1 << 14;
 
@@ -73,6 +78,7 @@ constexpr int kInitialWavefront = 1 << 14;
 constexpr size_t kRingBudgetBytes = 1ull << 30;
 constexpr int kMinRingSlots = 8;
 constexpr int kMaxRingSlots = 4096;
+constexpr int kPickLanes = 32;
 
 enum : unsigned char {
   kActive = 0,    // still in the wavefront
@@ -120,13 +126,17 @@ inline int blocks_for(int items) {
 // segment walks of the CPU path, kept in one place so commit, stamp and release
 // cannot drift apart.  mark_3x3()'s y loop stops at y == _y, so the cross is
 // (x, y-1), (x-1, y), (x, y) and (x+1, y) -- not a full 3x3 block.
+// The lanes split the net's segments and points between them.  Every use is
+// order-independent (atomicMin, atomicOr, and a release that only clears cells
+// this net owns), so which lane gets which mark does not matter.
 template <class Fn>
-__device__ inline void visit_marks(const DeviceMarks &marks, int net, int X, int Y, Fn fn) {
-  for(int i = marks.h_off[net]; i < marks.h_off[net + 1]; i++)
+__device__ inline void visit_marks(const DeviceMarks &marks, int net, int X, int Y,
+                                   int lane, Fn fn) {
+  for(int i = marks.h_off[net] + lane; i < marks.h_off[net + 1]; i += kPickLanes)
     for(int pos = marks.h_lo[i]; pos <= marks.h_hi[i]; pos += Y) fn(pos);
-  for(int i = marks.v_off[net]; i < marks.v_off[net + 1]; i++)
+  for(int i = marks.v_off[net] + lane; i < marks.v_off[net + 1]; i += kPickLanes)
     for(int pos = marks.v_lo[i]; pos <= marks.v_hi[i]; pos++) fn(pos);
-  for(int i = marks.p_off[net]; i < marks.p_off[net + 1]; i++) {
+  for(int i = marks.p_off[net] + lane; i < marks.p_off[net + 1]; i += kPickLanes) {
     const int pos = marks.p_pos[i];
     const int x = pos / Y, y = pos % Y;
     if(y > 0) fn(pos - 1);
@@ -154,23 +164,35 @@ __global__ void pick_kernel(const int *active, int active_cnt, DeviceMarks marks
                             const unsigned *slot_maps, long long words, int ring,
                             int slot_base, int live_cnt, const int *slot_size, int cap,
                             int *scan_from, int *pick) {
-  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x) {
+  // The whole warp shares one net, so every lane runs the same number of scan
+  // steps and can join the ballot that ends them.
+  const int lane = threadIdx.x % kPickLanes;
+  const int warp_cnt = blockDim.x * gridDim.x / kPickLanes;
+  for(int i = (blockIdx.x * blockDim.x + threadIdx.x) / kPickLanes; i < active_cnt; i += warp_cnt) {
     const int net = active[i];
     const int last = slot_base + live_cnt;
     int chosen = -1;
-    int batch = scan_from[net];
-    if(batch < slot_base) batch = slot_base;   // its earlier batches were closed
-    for(; batch < last; batch++) {
-      const int slot = batch % ring;
-      if(slot_size[slot] >= cap) continue;
-      const unsigned *map = slot_maps + slot * words;
-      bool free_here = true;
-      for(int k = marks.p_off[net]; k < marks.p_off[net + 1]; k++)
-        if(bit_test(map, marks.p_pos[k])) { free_here = false; break; }
-      if(free_here) { chosen = batch; break; }
+    int first = scan_from[net];
+    if(first < slot_base) first = slot_base;   // its earlier batches were closed
+    for(int base = first; base < last; base += kPickLanes) {
+      const int batch = base + lane;
+      bool free_here = false;
+      if(batch < last) {
+        const int slot = batch % ring;
+        if(slot_size[slot] < cap) {
+          const unsigned *map = slot_maps + slot * words;
+          free_here = true;
+          for(int k = marks.p_off[net]; k < marks.p_off[net + 1]; k++)
+            if(bit_test(map, marks.p_pos[k])) { free_here = false; break; }
+        }
+      }
+      const unsigned mask = __ballot_sync(0xffffffffu, free_here);
+      if(mask != 0u) { chosen = base + __ffs((int) mask) - 1; break; }
     }
-    scan_from[net] = chosen < 0 ? last : chosen;
-    pick[i] = chosen;
+    if(lane == 0) {
+      scan_from[net] = chosen < 0 ? last : chosen;
+      pick[i] = chosen;
+    }
   }
 }
 
@@ -179,9 +201,11 @@ __global__ void pick_kernel(const int *active, int active_cnt, DeviceMarks marks
 // round, which is cheaper than keeping an owner map per open batch.
 __global__ void commit_kernel(const int *active, int active_cnt, DeviceMarks marks,
                               int X, int Y, int *owner) {
-  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x) {
+  const int lane = threadIdx.x % kPickLanes;
+  const int warp_cnt = blockDim.x * gridDim.x / kPickLanes;
+  for(int i = (blockIdx.x * blockDim.x + threadIdx.x) / kPickLanes; i < active_cnt; i += warp_cnt) {
     const int net = active[i];
-    visit_marks(marks, net, X, Y, [&] (int pos) { atomicMin(owner + pos, net); });
+    visit_marks(marks, net, X, Y, lane, [&] (int pos) { atomicMin(owner + pos, net); });
   }
 }
 
@@ -191,34 +215,41 @@ __global__ void commit_kernel(const int *active, int active_cnt, DeviceMarks mar
 __global__ void check_kernel(const int *active, int active_cnt, const int *pick,
                              DeviceMarks marks, const int *owner, int ring, int cap,
                              int *slot_size, int *batch_of_net, unsigned char *status) {
-  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x) {
+  const int lane = threadIdx.x % kPickLanes;
+  const int warp_cnt = blockDim.x * gridDim.x / kPickLanes;
+  for(int i = (blockIdx.x * blockDim.x + threadIdx.x) / kPickLanes; i < active_cnt; i += warp_cnt) {
     const int net = active[i];
-    bool clean = true;
-    for(int k = marks.p_off[net]; k < marks.p_off[net + 1]; k++)
-      if(owner[marks.p_pos[k]] != net) { clean = false; break; }
-    unsigned char state = kActive;
-    if(clean && pick[i] >= 0) {
-      // The size cap is a memory guard on the batch kernels downstream, and it
-      // sits far above the batch sizes these designs produce.  Losing the race
-      // for the last few places only sends a net to another batch.
-      const int taken = atomicAdd(slot_size + pick[i] % ring, 1);
-      if(taken < cap) {
-        batch_of_net[net] = pick[i];
-        state = kAssigned;
+    bool lost = false;
+    for(int k = marks.p_off[net] + lane; k < marks.p_off[net + 1]; k += kPickLanes)
+      if(owner[marks.p_pos[k]] != net) { lost = true; break; }
+    const bool clean = __ballot_sync(0xffffffffu, lost) == 0u;
+    if(lane == 0) {
+      unsigned char state = kActive;
+      if(clean && pick[i] >= 0) {
+        // The size cap is a memory guard on the batch kernels downstream, and
+        // it sits far above the batch sizes these designs produce.  Losing the
+        // race for the last few places only sends a net to another batch.
+        const int taken = atomicAdd(slot_size + pick[i] % ring, 1);
+        if(taken < cap) {
+          batch_of_net[net] = pick[i];
+          state = kAssigned;
+        }
       }
+      status[i] = state;
     }
-    status[i] = state;
   }
 }
 
 __global__ void stamp_kernel(const int *active, int active_cnt, const int *pick,
                              const unsigned char *status, DeviceMarks marks, int X, int Y,
                              unsigned *slot_maps, long long words, int ring) {
-  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x) {
+  const int lane = threadIdx.x % kPickLanes;
+  const int warp_cnt = blockDim.x * gridDim.x / kPickLanes;
+  for(int i = (blockIdx.x * blockDim.x + threadIdx.x) / kPickLanes; i < active_cnt; i += warp_cnt) {
     if(status[i] != kAssigned) continue;
     const int net = active[i];
     unsigned *map = slot_maps + (pick[i] % ring) * words;
-    visit_marks(marks, net, X, Y, [&] (int pos) {
+    visit_marks(marks, net, X, Y, lane, [&] (int pos) {
       atomicOr(map + (pos >> 5), 1u << (pos & 31));
     });
   }
@@ -229,9 +260,11 @@ __global__ void stamp_kernel(const int *active, int active_cnt, const int *pick,
 // holds this net's index only if this net won it, so the store cannot race.
 __global__ void release_kernel(const int *active, int active_cnt, DeviceMarks marks,
                                int X, int Y, int *owner) {
-  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x) {
+  const int lane = threadIdx.x % kPickLanes;
+  const int warp_cnt = blockDim.x * gridDim.x / kPickLanes;
+  for(int i = (blockIdx.x * blockDim.x + threadIdx.x) / kPickLanes; i < active_cnt; i += warp_cnt) {
     const int net = active[i];
-    visit_marks(marks, net, X, Y, [&] (int pos) {
+    visit_marks(marks, net, X, Y, lane, [&] (int pos) {
       if(owner[pos] == net) owner[pos] = kEmpty;
     });
   }
@@ -348,18 +381,18 @@ inline bool generate(const HostMarks &marks, int net_cnt, int X, int Y, int max_
       const int active_cnt = std::min(wavefront, pending_cnt);
       int *const active = pending.ptr + head;
 
-      pick_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
+      pick_kernel<<<blocks_for(active_cnt * kPickLanes), kBlockSize>>>(
           active, active_cnt, device_marks, slot_maps.ptr, words, ring, slot_base, live_cnt,
           slot_size.ptr, cap, scan_from.ptr, pick.ptr);
-      commit_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
+      commit_kernel<<<blocks_for(active_cnt * kPickLanes), kBlockSize>>>(
           active, active_cnt, device_marks, X, Y, owner.ptr);
-      check_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
+      check_kernel<<<blocks_for(active_cnt * kPickLanes), kBlockSize>>>(
           active, active_cnt, pick.ptr, device_marks, owner.ptr, ring, cap, slot_size.ptr,
           batch_of_net.ptr, status.ptr);
-      stamp_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
+      stamp_kernel<<<blocks_for(active_cnt * kPickLanes), kBlockSize>>>(
           active, active_cnt, pick.ptr, status.ptr, device_marks, X, Y, slot_maps.ptr, words,
           ring);
-      release_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
+      release_kernel<<<blocks_for(active_cnt * kPickLanes), kBlockSize>>>(
           active, active_cnt, device_marks, X, Y, owner.ptr);
       check(cudaGetLastError(), "commit-check round");
 
