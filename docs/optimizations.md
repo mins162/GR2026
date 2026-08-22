@@ -259,9 +259,23 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 - `16.8 commits per net` — wavefront 하한 1024에 배정이 라운드당 62개뿐이라 커밋의 94%가 헛일
   - → net당 warp로 바꾼 뒤론 256 net이면 이미 8k 스레드 → 하한 **1024 → 256**
 
+### 결과 — 5차 반영 후 `mempool_cluster_ranking`
+
+| 구간 | main | GPU batch gen | 개선 |
+| --- | --- | --- | --- |
+| S1 batch generation | 16.33s | **5.50s** | −66% |
+| S2 batch generation | 14.56s | **8.90s** | −39% |
+| S2 GPU route | 20.75s | 20.78s | 동일 (batch 460 vs 461) |
+| 전체 runtime | 133.25s | **118.69s** | −10.9% |
+
+- `retired 0`, `commits per net` 2.6 / 5.5, ring 748 슬롯
+- ISPD score 1,780,669,528 vs main 1,780,725,674 (노이즈)
+- 상세 : **[2026-08-22-opt.md](2026-08-22-opt.md)**
+
 ### 다음 작업
 
-- 5차 서버 재측정 (`mempool_cluster_ranking` 우선, `retired`가 0인지 확인)
+- S2 라운드 수 : batch 수의 13.6배 (`mempool_group`은 3배) — 한 라운드에 batch를 여러 개 여는 방식 검토
+- `mempool_group` 5차 튜닝 반영 재측정
 - `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
