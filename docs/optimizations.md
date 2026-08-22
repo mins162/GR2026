@@ -10,7 +10,7 @@
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
 | 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
 | 3 | vcost / presum 계산 절감 | runtime·품질 양호, 시간 측정 방식 재검토 후 재측정 예정 | 2026-08-20 |
-| 4 | GPU batch generation | 논문 스케줄링은 CPU보다 느려 재설계, 재측정 전 | 2026-08-22 |
+| 4 | GPU batch generation | `mempool_group` S1 −70% / S2 −52%, 전체 −11.9% | 2026-08-22 |
 
 ---
 
@@ -225,9 +225,23 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
   - wavefront 1024 → 스레드 32k
 - `kPickLanes = 1`로 두면 기존 순차 동작과 동일 — 호스트 시뮬레이션은 이 설정으로 검증
 
+### 결과 — `mempool_group`
+
+| 구간 | CPU first-fit | GPU (4차) | 개선 |
+| --- | --- | --- | --- |
+| S1 batch generation | 3.15s | **0.95s** | −70% |
+| S2 batch generation | 3.50s | **1.67s** | −52% |
+| 전체 runtime | 36.66s | **32.31s** | −11.9% |
+
+- batch 수 : S1 603 vs CPU 601, S2 871 vs 866
+- **다운스트림 영향 없음** : S1 GPU route 3.47s (CPU 때 3.52s), S2 GPU route 5.71s (5.77s), host DAG prep 2.65s (2.68s)
+- ISPD score 397,595,645 — 노이즈 수준 (슬라이드 기준 397,601,526)
+- 라운드당 비용 : S2 기준 5.07ms → **0.62ms**
+
 ### 다음 작업
 
-- **4차 구조 서버 A/B 재측정** (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
+- `mempool_cluster_ranking` 측정 (owner map `X*Y` int, ring bitmap 메모리 여유 확인)
+- `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 4차 구조 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
 
