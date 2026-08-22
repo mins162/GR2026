@@ -46,10 +46,6 @@
 // batch.
 
 #include <cuda_runtime.h>
-#include <thrust/copy.h>
-#include <thrust/device_ptr.h>
-#include <thrust/execution_policy.h>
-#include <thrust/sequence.h>
 
 #include <algorithm>
 #include <climits>
@@ -66,8 +62,9 @@ constexpr int kMaxBlocks = 8192;
 
 // Wavefront bounds.  It is retuned every round from the assignment rate, so
 // these only have to be wide enough to bracket the batch sizes of both stages
-// (stage 1 averages ~4k nets per batch, stage 2 ~230).
-constexpr int kMinWavefront = 256;
+// (stage 1 averages ~4k nets per batch, stage 2 ~230).  The floor keeps the
+// tail of a run from running rounds too small to be worth their launch.
+constexpr int kMinWavefront = 1024;
 constexpr int kMaxWavefront = 1 << 18;
 constexpr int kInitialWavefront = 1 << 14;
 
@@ -151,11 +148,12 @@ __global__ void fill_kernel(int *data, long long count, int value) {
 
 // First fit over the open batches.  A batch that blocked this net can only have
 // gained marks since, so the scan resumes where it stopped instead of starting
-// over; that is what keeps a failed attempt down to a few bitmap reads.
+// over; that is what keeps a failed attempt down to a few bitmap reads.  The
+// newest batch is always an empty one, so the scan always ends somewhere.
 __global__ void pick_kernel(const int *active, int active_cnt, DeviceMarks marks,
                             const unsigned *slot_maps, long long words, int ring,
                             int slot_base, int live_cnt, const int *slot_size, int cap,
-                            int *scan_from, int *pick, int *need_slot) {
+                            int *scan_from, int *pick) {
   for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x) {
     const int net = active[i];
     const int last = slot_base + live_cnt;
@@ -173,13 +171,7 @@ __global__ void pick_kernel(const int *active, int active_cnt, DeviceMarks marks
     }
     scan_from[net] = chosen < 0 ? last : chosen;
     pick[i] = chosen;
-    if(chosen < 0) *need_slot = 1;
   }
-}
-
-__global__ void adopt_slot_kernel(int active_cnt, int *pick, int new_batch) {
-  for(int i = blockIdx.x * blockDim.x + threadIdx.x; i < active_cnt; i += blockDim.x * gridDim.x)
-    if(pick[i] < 0) pick[i] = new_batch;
 }
 
 // The paper's commit step.  Nets that picked different batches share the owner
@@ -205,7 +197,7 @@ __global__ void check_kernel(const int *active, int active_cnt, const int *pick,
     for(int k = marks.p_off[net]; k < marks.p_off[net + 1]; k++)
       if(owner[marks.p_pos[k]] != net) { clean = false; break; }
     unsigned char state = kActive;
-    if(clean) {
+    if(clean && pick[i] >= 0) {
       // The size cap is a memory guard on the batch kernels downstream, and it
       // sits far above the batch sizes these designs produce.  Losing the race
       // for the last few places only sends a net to another batch.
@@ -245,10 +237,6 @@ __global__ void release_kernel(const int *active, int active_cnt, DeviceMarks ma
   }
 }
 
-struct IsActive {
-  __host__ __device__ bool operator() (unsigned char state) const { return state == kActive; }
-};
-
 template <class T>
 struct DeviceArray {
   T *ptr = nullptr;
@@ -269,7 +257,6 @@ struct DeviceArray {
     if(host.empty()) return;
     check(cudaMemcpy(ptr, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice), what);
   }
-  thrust::device_ptr<T> begin() const { return thrust::device_pointer_cast(ptr); }
 };
 
 // Returns false and leaves out untouched when the GPU cannot take the job (out
@@ -309,62 +296,61 @@ inline bool generate(const HostMarks &marks, int net_cnt, int X, int Y, int max_
     fill_kernel<<<kMaxBlocks, kBlockSize>>>(owner.ptr, cell_count, kEmpty);
     check(cudaGetLastError(), "owner map fill");
 
-    DeviceArray<int> batch_of_net, scan_from, pending, pending_next;
+    DeviceArray<int> batch_of_net, scan_from, pending;
     batch_of_net.alloc(net_cnt, "batch id alloc");
     fill_kernel<<<blocks_for(net_cnt), kBlockSize>>>(batch_of_net.ptr, net_cnt, -1);
     scan_from.alloc(net_cnt, "scan cursor alloc");
     check(cudaMemset(scan_from.ptr, 0, (size_t)net_cnt * sizeof(int)), "scan cursor clear");
-    // Unplaced nets, kept in priority order.  The wavefront is its prefix, so
-    // narrowing the wavefront hands the tail straight back to the next round
-    // instead of leaving stale nets in flight.
-    pending.alloc(net_cnt, "pending alloc");
-    pending_next.alloc(net_cnt, "pending scratch alloc");
-    thrust::sequence(thrust::device, pending.begin(), pending.begin() + net_cnt);
-    check(cudaGetLastError(), "pending fill");
+
+    // Unplaced nets in priority order.  The wavefront is the prefix starting at
+    // head, so narrowing the wavefront hands the tail straight back to the next
+    // round instead of leaving stale nets in flight.  The host keeps the list:
+    // compacting it there costs one small copy each way, where a device-side
+    // stream compaction would allocate scratch storage every round.
+    std::vector<int> pending_host(net_cnt);
+    for(int i = 0; i < net_cnt; i++) pending_host[i] = i;
+    pending.upload(pending_host, "pending upload");
 
     const int wavefront_cap = std::min(net_cnt, kMaxWavefront);
-    DeviceArray<int> pick, need_slot;
+    DeviceArray<int> pick;
     DeviceArray<unsigned char> status;
     pick.alloc(wavefront_cap, "pick alloc");
     status.alloc(wavefront_cap, "status alloc");
-    need_slot.alloc(1, "new-batch flag alloc");
+    std::vector<unsigned char> status_host(wavefront_cap);
+    std::vector<int> kept_host(wavefront_cap);
 
     const int cap = std::max(1, std::min(net_cnt, max_batch_size));
     int wavefront = std::min(net_cnt, kInitialWavefront);
-    int pending_cnt = net_cnt, slot_base = 0, live_cnt = 0, stalled = 0;
+    int pending_cnt = net_cnt, head = 0, slot_base = 0, live_cnt = 0, stalled = 0;
 
+    // The newest batch is kept empty so that pick_kernel always has somewhere to
+    // put a net that fits nowhere else; that removes a device-to-host round trip
+    // from the middle of every round.
+    const auto open_batch = [&] {
+      if(live_cnt == ring) {
+        // The ring is full, so the oldest batch is closed to make room.  Nets
+        // that arrive later can no longer land in it, which can cost a few
+        // extra batches; the ring is sized to make that rare.
+        slot_base++;
+        live_cnt--;
+        out.retired++;
+      }
+      const int slot = (slot_base + live_cnt) % ring;
+      check(cudaMemset(slot_maps.ptr + (size_t)slot * words, 0, words * sizeof(unsigned)),
+            "batch bitmap clear");
+      check(cudaMemset(slot_size.ptr + slot, 0, sizeof(int)), "batch size clear");
+      live_cnt++;
+    };
+    open_batch();
+
+    int newest_size = 0;
     while(pending_cnt > 0) {
       const int active_cnt = std::min(wavefront, pending_cnt);
-      int *const active = pending.ptr;
+      int *const active = pending.ptr + head;
 
-      check(cudaMemset(need_slot.ptr, 0, sizeof(int)), "new-batch flag clear");
       pick_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
           active, active_cnt, device_marks, slot_maps.ptr, words, ring, slot_base, live_cnt,
-          slot_size.ptr, cap, scan_from.ptr, pick.ptr, need_slot.ptr);
-      check(cudaGetLastError(), "batch pick");
-      int open_new = 0;
-      check(cudaMemcpy(&open_new, need_slot.ptr, sizeof(int), cudaMemcpyDeviceToHost),
-            "new-batch flag read");
-
-      if(open_new) {
-        if(live_cnt == ring) {
-          // The ring is full, so the oldest batch is closed to make room.  Nets
-          // that arrive later can no longer land in it, which can cost a few
-          // extra batches; the ring is sized to make that rare.
-          slot_base++;
-          live_cnt--;
-          out.retired++;
-        }
-        const int new_batch = slot_base + live_cnt;
-        const int slot = new_batch % ring;
-        check(cudaMemset(slot_maps.ptr + (size_t)slot * words, 0, words * sizeof(unsigned)),
-              "batch bitmap clear");
-        check(cudaMemset(slot_size.ptr + slot, 0, sizeof(int)), "batch size clear");
-        live_cnt++;
-        adopt_slot_kernel<<<blocks_for(active_cnt), kBlockSize>>>(active_cnt, pick.ptr, new_batch);
-        check(cudaGetLastError(), "new batch adoption");
-      }
-
+          slot_size.ptr, cap, scan_from.ptr, pick.ptr);
       commit_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
           active, active_cnt, device_marks, X, Y, owner.ptr);
       check_kernel<<<blocks_for(active_cnt), kBlockSize>>>(
@@ -377,16 +363,14 @@ inline bool generate(const HostMarks &marks, int net_cnt, int X, int Y, int max_
           active, active_cnt, device_marks, X, Y, owner.ptr);
       check(cudaGetLastError(), "commit-check round");
 
-      // Keep the nets that did not make it, then re-attach the pending tail
-      // the wavefront did not reach.
-      const auto kept_end = thrust::copy_if(thrust::device, pending.begin(),
-                                            pending.begin() + active_cnt, status.begin(),
-                                            pending_next.begin(), IsActive{});
-      const int kept = (int)(kept_end - pending_next.begin());
-      const int tail = pending_cnt - active_cnt;
-      if(tail > 0)
-        check(cudaMemcpy(pending_next.ptr + kept, pending.ptr + active_cnt, tail * sizeof(int),
-                         cudaMemcpyDeviceToDevice), "pending tail carry");
+      check(cudaMemcpy(status_host.data(), status.ptr, active_cnt, cudaMemcpyDeviceToHost),
+            "status download");
+      check(cudaMemcpy(&newest_size, slot_size.ptr + (slot_base + live_cnt - 1) % ring,
+                       sizeof(int), cudaMemcpyDeviceToHost), "batch size download");
+
+      int kept = 0;
+      for(int i = 0; i < active_cnt; i++)
+        if(status_host[i] == kActive) kept_host[kept++] = pending_host[head + i];
       const int assigned = active_cnt - kept;
       // The highest-priority net of a round wins every cell it asks for, so a
       // round without an assignment means it lost the race for the last places
@@ -394,14 +378,21 @@ inline bool generate(const HostMarks &marks, int net_cnt, int X, int Y, int max_
       // several in a row would mean the invariant broke, so bail to the CPU.
       stalled = assigned == 0 ? stalled + 1 : 0;
       if(stalled > 4) throw std::runtime_error("rounds stopped assigning nets");
-      std::swap(pending.ptr, pending_next.ptr);
-      pending_cnt = kept + tail;
+      if(kept > 0) {
+        std::copy(kept_host.begin(), kept_host.begin() + kept, pending_host.begin() + head + assigned);
+        check(cudaMemcpy(pending.ptr + head + assigned, kept_host.data(), kept * sizeof(int),
+                         cudaMemcpyHostToDevice), "pending upload"); 
+      }
+      head += assigned;
+      pending_cnt -= assigned;
       out.commits += active_cnt;
       out.rounds++;
+      if(newest_size > 0 && pending_cnt > 0) open_batch();
 
-      // Retune the wavefront to the batch size this design produces: too wide
-      // and most of the round's commits are speculation that loses, too narrow
-      // and the round does not fill the GPU.
+      // Retune the wavefront to the batch size this design produces.  The round
+      // count does not depend on it -- how fast batches fill is set by the
+      // conflicts, not by how many nets are in flight -- so a wavefront wider
+      // than the design needs only buys speculation that loses.
       if(assigned * 8 < wavefront) wavefront = std::max(kMinWavefront, wavefront / 2);
       else if(assigned * 2 > wavefront) wavefront = std::min(wavefront_cap, wavefront * 2);
     }
@@ -409,7 +400,9 @@ inline bool generate(const HostMarks &marks, int net_cnt, int X, int Y, int max_
     out.batch_of_net.resize(net_cnt);
     check(cudaMemcpy(out.batch_of_net.data(), batch_of_net.ptr, net_cnt * sizeof(int),
                      cudaMemcpyDeviceToHost), "batch id download");
-    out.batch_count = slot_base + live_cnt;
+    // The newest batch is kept empty on purpose; it is only a real batch once a
+    // net has landed in it.
+    out.batch_count = slot_base + live_cnt - (newest_size == 0 ? 1 : 0);
     out.ring_slots = ring;
     out.wavefront = wavefront;
     return true;

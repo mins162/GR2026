@@ -165,6 +165,8 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 | S1 batch generation | 3.15s | **5.51s** |
 | S2 batch generation | 3.50s | **12.93s** |
 
+(2차 구조 실측은 S1 3.44s / S2 13.41s — 아래 3차 참고)
+
 - 원인 : net 하나가 "자기가 최종적으로 들어갈 batch 번호"만큼 full commit을 반복
   - S2는 net 197k에 batch 869개 → net당 평균 **~430회** commit, 거기에 batch당 commit-check 라운드 5.1회가 곱해짐
 - CPU가 빠른 이유는 **실패가 싸기** 때문 : `has_conflict`가 point 몇 개 읽고 첫 충돌에서 리턴
@@ -179,7 +181,19 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 - **commit / check** : 고른 batch 하나에만 라운드당 1회 commit
 - 열린 batch에 다 못 들어가면 새 batch를 열고, ring이 꽉 차면 가장 오래된 batch를 닫음
 
-효과 (호스트 시뮬레이션, net 60k): net당 commit이 **4.4~5.9회** — 논문 방식의 수백 회 대비 두 자릿수 배 감소.
+효과 (호스트 시뮬레이션, net 60k): net당 commit이 **6~8회** — 논문 방식의 수백 회 대비 두 자릿수 배 감소.
+
+### 3차 : 라운드 오버헤드 제거
+
+2차 실측(`mempool_group`)에서 S1 5.51 → **3.44s**(CPU 3.15), S2는 12.93 → **13.41s**로 거의 그대로였습니다. 로그를 보면 net당 commit은 이미 2.8 / 5.1회로 싼데 라운드가 1847 / 2761회 — **라운드당 4.9ms**가 나왔습니다. 커널 자체가 아니라 라운드 고정비용이 전부였습니다.
+
+- 원인 : `thrust::copy_if`가 호출마다 임시 버퍼를 `cudaMalloc`/`cudaFree` — `cudaFree`는 디바이스 전체를 동기화하고, 수 GB를 잡고 있는 상태에선 ms 단위
+- 조치
+  - 미배치 리스트 compaction을 **호스트에서** 수행 (status 다운로드 + 남은 net 업로드, 라운드당 수십 KB) → thrust 의존 제거
+  - 항상 빈 batch 하나를 열어둬서 "새 batch 필요?" D2H 왕복 제거
+  - pending 리스트는 head 오프셋으로 관리 → 라운드마다 tail을 복사하지 않음
+- 라운드 수는 batch 수의 약 3배로 **구조적으로 고정**(wavefront 크기와 무관, 시뮬레이션에서 확인) → 라운드당 비용을 줄이는 것 외에 방법이 없음
+- wavefront는 좁을수록 commit이 줄고 라운드 수는 그대로 → 하한 1024, 배정 수의 8배 초과 시 축소
 
 ### 기하·판정은 CPU 경로 그대로
 
@@ -199,7 +213,7 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 
 ### 다음 작업
 
-- **2차 구조 서버 A/B 재측정** (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
+- **3차 구조 서버 A/B 재측정** (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
 
