@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include "gpu_flute.hpp"
+#include "gpu_batch_gen.hpp"
 
 namespace cudb {
 
@@ -245,8 +246,22 @@ void net::calc_hpwl() {
 }
 
 
-vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH_SIZE = 1000000) {    
-    auto _time = elapsed_time();
+// Set INSTANTGR_GPU_BATCH_GEN=0 to keep the sequential first-fit batch
+// generation below instead of the journal's GPU algorithm.
+bool gpu_batch_gen_enabled() {
+    const char *value = getenv("INSTANTGR_GPU_BATCH_GEN");
+    return value == nullptr || string(value) != "0";
+}
+
+// INSTANTGR_GPU_BATCH_GEN_VALIDATE=1 replays the batches to confirm that no
+// net collides with a higher-priority member of its own batch, and reports how
+// far the GPU partition drifted from the CPU one.  Slow: it runs both paths.
+bool gpu_batch_gen_validate() {
+    const char *value = getenv("INSTANTGR_GPU_BATCH_GEN_VALIDATE");
+    return value != nullptr && string(value) == "1";
+}
+
+vector<vector<int>> generate_batches_rsmt_cpu(vector<int> &nets2route, int MAX_BATCH_SIZE) {
     vector<vector<int>> batches;
     vector<vector<bool>> batch_vis;
 
@@ -287,9 +302,155 @@ vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH
         }
         for(auto p : nets[net_id].points) mark_3x3(p, batch_id);
     }
+    return move(batches);
+}
+
+// Flatten every net's marks into the CSR layout the GPU kernels read.  A net's
+// priority is its position in nets2route, the order the CPU path walks, so
+// both paths hand a contested cell to the same net.
+gpu_batch::HostMarks collect_batch_marks(const vector<int> &nets2route) {
+    const int net_cnt = nets2route.size();
+    gpu_batch::HostMarks marks;
+    marks.h_off.resize(net_cnt + 1, 0);
+    marks.v_off.resize(net_cnt + 1, 0);
+    marks.p_off.resize(net_cnt + 1, 0);
+    for(int i = 0; i < net_cnt; i++) {
+        const auto &target = nets[nets2route[i]];
+        marks.h_off[i + 1] = marks.h_off[i] + target.rsmt_h_segments.size();
+        marks.v_off[i + 1] = marks.v_off[i] + target.rsmt_v_segments.size();
+        marks.p_off[i + 1] = marks.p_off[i] + target.points.size();
+    }
+    marks.h_lo.resize(marks.h_off[net_cnt]);
+    marks.h_hi.resize(marks.h_off[net_cnt]);
+    marks.v_lo.resize(marks.v_off[net_cnt]);
+    marks.v_hi.resize(marks.v_off[net_cnt]);
+    marks.p_pos.resize(marks.p_off[net_cnt]);
+    const int worker_cnt = 8;
+    vector<thread> workers;
+    for(int w = 0; w < worker_cnt; w++)
+        workers.emplace_back([&marks, &nets2route, net_cnt, w, worker_cnt] {
+            for(int i = w; i < net_cnt; i += worker_cnt) {
+                const auto &target = nets[nets2route[i]];
+                int at = marks.h_off[i];
+                for(auto seg : target.rsmt_h_segments) {
+                    marks.h_lo[at] = seg.first;
+                    marks.h_hi[at] = seg.second;
+                    at++;
+                }
+                at = marks.v_off[i];
+                for(auto seg : target.rsmt_v_segments) {
+                    marks.v_lo[at] = seg.first;
+                    marks.v_hi[at] = seg.second;
+                    at++;
+                }
+                at = marks.p_off[i];
+                for(auto pos : target.points) marks.p_pos[at++] = pos;
+            }
+        });
+    for(auto &worker : workers) worker.join();
+    return marks;
+}
+
+// The invariant the router relies on, checked by replaying a batch in priority
+// order: no net's point may be covered by a member placed before it.
+bool batches_are_conflict_free(const vector<vector<int>> &batches) {
+    vector<bool> vis(X * Y, false);
+    vector<int> touched;
+    auto mark = [&] (int pos) {
+        if(!vis[pos]) {
+            vis[pos] = true;
+            touched.emplace_back(pos);
+        }
+    };
+    bool ok = true;
+    for(int batch_id = 0; batch_id < batches.size() && ok; batch_id++) {
+        touched.clear();
+        for(auto net_id : batches[batch_id]) {
+            for(auto pos : nets[net_id].points) if(vis[pos]) {
+                printf("[gpu-batch-gen] batch %d: net %d collides at cell %d\n", batch_id, net_id, pos);
+                ok = false;
+                break;
+            }
+            if(!ok) break;
+            for(auto seg : nets[net_id].rsmt_h_segments)
+                for(auto pos = seg.first; pos <= seg.second; pos += Y) mark(pos);
+            for(auto seg : nets[net_id].rsmt_v_segments)
+                for(auto pos = seg.first; pos <= seg.second; pos += 1) mark(pos);
+            for(auto pos : nets[net_id].points) {
+                const int x = pos / Y, y = pos % Y;
+                if(y > 0) mark(pos - 1);
+                mark(pos);
+                if(x > 0) mark(pos - Y);
+                if(x + 1 < X) mark(pos + Y);
+            }
+        }
+        for(auto pos : touched) vis[pos] = false;
+    }
+    return ok;
+}
+
+vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH_SIZE = 1000000) {
+    auto _time = elapsed_time();
+    vector<vector<int>> batches;
+    bool on_gpu = false;
+    int commit_check_rounds = 0, max_rounds_per_batch = 0;
+    double collect_seconds = 0;
+
+    if(gpu_batch_gen_enabled()) try {
+        const double collect_start = elapsed_time();
+        auto marks = collect_batch_marks(nets2route);
+        collect_seconds = elapsed_time() - collect_start;
+        gpu_batch::Result result;
+        if(gpu_batch::generate(marks, nets2route.size(), X, Y, MAX_BATCH_SIZE, result)) {
+            vector<int> batch_size(result.batch_count, 0);
+            for(auto batch_id : result.batch_of_net)
+                if(batch_id >= 0 && batch_id < result.batch_count) batch_size[batch_id]++;
+            int placed = 0;
+            for(auto size : batch_size) placed += size;
+            if(placed != (int)nets2route.size()) {
+                printf("[gpu-batch-gen] %d of %zu nets were left unplaced; falling back to the CPU path\n",
+                       (int)nets2route.size() - placed, nets2route.size());
+            } else {
+                batches.assign(result.batch_count, vector<int> ());
+                for(int i = 0; i < result.batch_count; i++) batches[i].reserve(batch_size[i]);
+                for(int i = 0; i < nets2route.size(); i++)
+                    batches[result.batch_of_net[i]].emplace_back(nets2route[i]);
+                commit_check_rounds = result.commit_check_rounds;
+                max_rounds_per_batch = result.max_rounds_per_batch;
+                on_gpu = true;
+            }
+        }
+    } catch(const std::exception &error) {
+        // The flattened marks of a large design are a sizable host allocation;
+        // running out of memory here is a reason to fall back, not to die.
+        printf("[gpu-batch-gen] %s; falling back to the CPU path\n", error.what());
+        batches.clear();
+        on_gpu = false;
+    }
+    if(!on_gpu) batches = generate_batches_rsmt_cpu(nets2route, MAX_BATCH_SIZE);
+
     _time = elapsed_time() - _time;
     if(LOG) cout << setw(40) << "Batch" << setw(20) << "#Nets" << setw(20) << "#Batches" << setw(20) << "Time" << endl;
-    if(LOG) cout << setw(40) << "Generation" << setw(20) << nets2route.size() << setw(20) << batches.size() << setw(20) << setprecision(2) << _time << endl;
+    if(LOG) cout << setw(40) << (on_gpu ? "Generation (GPU)" : "Generation (CPU)") << setw(20) << nets2route.size() << setw(20) << batches.size() << setw(20) << setprecision(2) << _time << endl;
+    if(LOG && on_gpu)
+        printf("        commit-check rounds: %d total, %d max per batch; mark collection %.3fs\n",
+               commit_check_rounds, max_rounds_per_batch, collect_seconds);
+
+    if(gpu_batch_gen_validate()) {
+        const bool ok = batches_are_conflict_free(batches);
+        printf("[gpu-batch-gen] conflict-free: %s\n", ok ? "yes" : "NO");
+        if(on_gpu) {
+            auto reference = generate_batches_rsmt_cpu(nets2route, MAX_BATCH_SIZE);
+            vector<int> cpu_batch_of_net(nets.size(), -1);
+            for(int i = 0; i < reference.size(); i++)
+                for(auto net_id : reference[i]) cpu_batch_of_net[net_id] = i;
+            long long moved = 0;
+            for(int i = 0; i < batches.size(); i++)
+                for(auto net_id : batches[i]) if(cpu_batch_of_net[net_id] != i) moved++;
+            printf("[gpu-batch-gen] batches GPU %zu vs CPU %zu, %lld of %zu nets in a different batch\n",
+                   batches.size(), reference.size(), moved, nets2route.size());
+        }
+    }
     return move(batches);
 }
 

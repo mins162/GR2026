@@ -1,6 +1,6 @@
 # InstantGR 최적화 정리
 
-- 최종 업데이트 : **2026-08-20**
+- 최종 업데이트 : **2026-08-22**
 - 기준 자료 : 2026-08-20 미팅 발표 (`0820 논문.pptx`, 슬라이드 21~33)
 - 대상 : ISPD 2024 global routing (InstantGR)
 - 벤치마크 : `mempool_group` (3.2M net), `mempool_cluster_ranking` (10.6M net)
@@ -10,6 +10,7 @@
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
 | 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
 | 3 | vcost / presum 계산 절감 | runtime·품질 양호, 시간 측정 방식 재검토 후 재측정 예정 | 2026-08-20 |
+| 4 | GPU batch generation | 구현 완료, 서버 측정 전 | 2026-08-22 |
 
 ---
 
@@ -149,6 +150,55 @@
 
 ---
 
+## 4. GPU batch generation <sub>2026-08-22</sub>
+
+- 근거 논문 : InstantGR journal (TCAD 2026) Section III-D *GPU-Accelerated Batch Generation*
+- 문제 : batch generation이 완전 순차 — net을 우선순위(hpwl 내림차순) 순으로 훑으며 충돌 없는 첫 batch에 넣음
+- 접근 : batch를 하나씩 만들면서 남은 net **전부**를 병렬로 commit → check
+  - **commit** : 각 net이 자기 mark를 batch map에 `atomicMin`으로 기록 → 우선순위가 높은(인덱스가 작은) net이 셀을 차지
+  - **check** : 자기 point를 전부 자기가 소유한 net을 이번 batch에 배정
+  - **rule out** : 이미 배정된 net에 막힌 net은 이번 batch를 포기하고 다음 batch로, 자기 mark는 회수
+  - 더 배정할 net이 없을 때까지 commit-check 반복 → 다음 batch 시작
+- 구현 위치 : `src/gpu_batch_gen.hpp`, 호출부는 `src/database_cuda.hpp`의 `generate_batches_rsmt()`
+- 기하·판정은 CPU 경로 그대로
+  - mark : h/v RSMT segment + point 주변 4셀 십자(`mark_3x3`)
+  - 충돌 판정 : 자기 **point만** 검사 (segment가 남의 셀을 지나가는 것은 허용)
+- batch 당 net 수 상한(Stage 1 `1,000,000` / Stage 2 `300,000`)은 후보가 아니라 **배정 수**에 적용
+  - 후보를 상한으로 자르면 우선순위 뒤쪽 net이 batch에 못 들어와 batch 수가 크게 늘어남
+
+### CPU 경로와의 차이
+
+- 논문의 rule-out은 **배정된 net 전체**와 비교, CPU first-fit은 **자기보다 앞선 net**과만 비교
+- 따라서 우선순위가 낮은 net이 먼저 배정되면 그보다 높은 net이 다음 batch로 밀릴 수 있음 → batch 구성이 동일하지는 않음 (논문도 "similar results")
+- 두 경로 모두 유지하는 불변식 : **batch 안에서 어떤 net의 point도 자기보다 앞선 멤버의 mark에 덮이지 않는다**
+
+### 영향 구간 (`mempool_group`, +RSMT 오버랩 기준)
+
+| 구간 | 현재 | 영향 |
+| --- | --- | --- |
+| Stage 1 batch generation | 4.13s | 전량 대체 |
+| Stage 2 전처리 + batch gen | 6.14s | batch gen 부분만 (`S2: RSMT/DAG preprocessing`은 그대로) |
+
+- 논문 보고치 : CPU representative point exhaustion 대비 **약 3×** (Table II, 벤치 10~13)
+- **서버 측정 아직 안 함** — 위 표는 대체 대상 구간이지 측정 결과가 아님
+
+### 검증
+
+- 호스트 시뮬레이션 (커널을 CPU에서 순차 실행, 무작위 net)
+  - 모든 net이 정확히 한 batch에 배정 · batch 내 충돌 없음 · 상한 준수 · 재실행 시 동일 결과
+  - batch 수는 상한이 안 걸리는 케이스에서 CPU first-fit과 **동일** (12/12, 31/31, 135/135, 94/94), 상한이 걸리면 +1
+  - net별 배치는 위 차이 때문에 상당수 이동 → 실제 벤치마크에서 score 노이즈 확인 필요
+- 실기 검증 : `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` (batch 충돌 검사 + CPU 결과와 batch 수/이동 net 수 비교)
+- 폴백 : GPU 메모리 부족 등으로 실패하면 경고를 찍고 CPU 경로로 자동 복귀
+
+### 다음 작업
+
+- 서버에서 A/B 측정 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교), Stage 1/2 구간 시간과 ISPD score 기록
+- batch map 메모리 : owner map이 `X*Y` int (최대 설계 기준 약 460MB) — 큰 설계에서 여유 확인
+- commit-check 반복 횟수(로그의 `commit-check rounds`)가 크면 우선순위 처리 방식 재검토
+
+---
+
 ## 다음 할 일 <sub>2026-08-20 미팅 기준</sub>
 
 - **FLUTE 가속 파이프라인**
@@ -166,4 +216,5 @@
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-22 | journal의 GPU batch generation 구현 (측정 전) |
 | 2026-08-20 | 최적화 1·2·3 정리 (미팅 발표). 2번 critical path 분석, 3번 재측정 과제로 남김 |
