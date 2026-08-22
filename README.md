@@ -109,5 +109,5 @@ env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh
 
 - 환경 변수 전체 : [docs/env-vars.md](docs/env-vars.md)
 - 서버 전용 경로·명령 : [docs/my-setup.md](docs/my-setup.md)
-- 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
+- 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf) (ICCAD), [InstantGR(Journal).pdf](docs/papers/InstantGR%28Journal%29.pdf) (TCAD, 확장판), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
 - baseline upstream 커밋 : `baseline/UPSTREAM_COMMIT.txt`
