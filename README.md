@@ -9,9 +9,9 @@ Optimizing InstantGR for faster global routing.
 | FLUTE (GPU-FLUTE) | RSMT **−35~65%** | 완료 |
 | Augmented DAG depth | depth **−23%**, runtime 변화 없음 | critical path 분석 예정 |
 | vcost / presum | 전체 runtime **−30~40%** | 시간 측정 방식 재검토 후 재측정 예정 |
-| GPU batch generation | 전체 **−11.9%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
+| GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
 
-- 전체 : `mempool_cluster_ranking` 233s → **141s (1.66×)**, ISPD score 변화 없음
+- 전체 : `mempool_cluster_ranking` 233s → **119s (1.97×)**, ISPD score 변화 없음
 - 상세 : **[docs/optimizations.md](docs/optimizations.md)**, 최신 작업 : **[docs/2026-08-22-opt.md](docs/2026-08-22-opt.md)**
 
 ---

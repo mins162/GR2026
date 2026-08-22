@@ -225,18 +225,18 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
   - wavefront 1024 → 스레드 32k
 - `kPickLanes = 1`로 두면 기존 순차 동작과 동일 — 호스트 시뮬레이션은 이 설정으로 검증
 
-### 결과 — `mempool_group`
+### 결과 — `mempool_group` (5차 반영 후)
 
-| 구간 | CPU first-fit | GPU (4차) | 개선 |
+| 구간 | CPU first-fit | GPU | 개선 |
 | --- | --- | --- | --- |
-| S1 batch generation | 3.15s | **0.95s** | −70% |
-| S2 batch generation | 3.50s | **1.67s** | −52% |
-| 전체 runtime | 36.66s | **32.31s** | −11.9% |
+| S1 batch generation | 3.60s | **0.80s** | −78% |
+| S2 batch generation | 3.81s | **1.18s** | −69% |
+| 전체 runtime | 37.89s | **31.55s** | −16.7% |
 
-- batch 수 : S1 603 vs CPU 601, S2 871 vs 866
-- **다운스트림 영향 없음** : S1 GPU route 3.47s (CPU 때 3.52s), S2 GPU route 5.71s (5.77s), host DAG prep 2.65s (2.68s)
+- batch 수 : S1 603 vs CPU 601, S2 869 vs 866
+- **다운스트림 영향 없음** : 4차 시점 측정에서 S1 GPU route 3.47s (CPU 때 3.52s), S2 GPU route 5.71s (5.77s)
 - ISPD score 397,595,645 — 노이즈 수준 (슬라이드 기준 397,601,526)
-- 라운드당 비용 : S2 기준 5.07ms → **0.62ms**
+- 라운드당 비용 : S2 기준 5.07ms → **0.43ms**
 
 ### 결과 — `mempool_cluster_ranking` (main 대비, 같은 머신 상태)
 
@@ -275,7 +275,7 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 ### 다음 작업
 
 - S2 라운드 수 : batch 수의 13.6배 (`mempool_group`은 3배) — 한 라운드에 batch를 여러 개 여는 방식 검토
-- `mempool_group` 5차 튜닝 반영 재측정
+- 나머지 디자인(`bsg_chip`, `mempool_tile_rank`) 측정
 - `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
