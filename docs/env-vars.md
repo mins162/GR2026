@@ -20,6 +20,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 | `INSTANTGR_GPU_FLUTE` | on | 고차수(degree ≥ 10) 넷의 FLUTE를 GPU에서 수행. `0`이면 전량 CPU FLUTE |
 | `INSTANTGR_INCREMENTAL_VCOST` | on | via cost를 dirty-cell 리스트로만 갱신 (전체 그리드 재계산 회피) |
 | `INSTANTGR_INCREMENTAL_PRESUM` | on | presum도 동일하게 증분 갱신 |
+| `INSTANTGR_GPU_BATCH_GEN` | on | batch generation을 GPU에서 수행 (journal Sec. III-D). `0`이면 CPU first-fit |
 
 ## 튜닝 노브
 
@@ -46,6 +47,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 | 변수 | 설명 |
 | --- | --- |
 | `INSTANTGR_GPU_FLUTE_VALIDATE` | GPU FLUTE 결과를 CPU 결과와 대조 |
+| `INSTANTGR_GPU_BATCH_GEN_VALIDATE` | batch 내 충돌 검사 + CPU batch 결과와 비교 (CPU 경로도 같이 돌림) |
 | `INSTANTGR_INCREMENTAL_VCOST_VALIDATE` | 매 배치마다 전체 그리드를 재계산해 vcost 일치 확인 |
 | `INSTANTGR_INCREMENTAL_PRESUM_VALIDATE` | presum에 대한 동일 검증 |
 | `INSTANTGR_GPU_FLUTE_PROFILE` | GPU FLUTE 단계별 시간 출력 |
