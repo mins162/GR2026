@@ -393,14 +393,14 @@ vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH
     auto _time = elapsed_time();
     vector<vector<int>> batches;
     bool on_gpu = false;
-    int commit_check_rounds = 0, max_rounds_per_batch = 0;
+    gpu_batch::Result gpu_result;
     double collect_seconds = 0;
 
     if(gpu_batch_gen_enabled()) try {
         const double collect_start = elapsed_time();
         auto marks = collect_batch_marks(nets2route);
         collect_seconds = elapsed_time() - collect_start;
-        gpu_batch::Result result;
+        gpu_batch::Result &result = gpu_result;
         if(gpu_batch::generate(marks, nets2route.size(), X, Y, MAX_BATCH_SIZE, result)) {
             vector<int> batch_size(result.batch_count, 0);
             for(auto batch_id : result.batch_of_net)
@@ -411,12 +411,17 @@ vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH
                 printf("[gpu-batch-gen] %d of %zu nets were left unplaced; falling back to the CPU path\n",
                        (int)nets2route.size() - placed, nets2route.size());
             } else {
-                batches.assign(result.batch_count, vector<int> ());
-                for(int i = 0; i < result.batch_count; i++) batches[i].reserve(batch_size[i]);
+                // A batch can come out empty when the round that opened it lost
+                // every candidate to a net in another batch; the router should
+                // not be handed an empty batch to launch kernels for.
+                vector<int> batch_index(result.batch_count, -1);
+                for(int i = 0; i < result.batch_count; i++) if(batch_size[i] > 0) {
+                    batch_index[i] = batches.size();
+                    batches.emplace_back(vector<int> ());
+                    batches.back().reserve(batch_size[i]);
+                }
                 for(int i = 0; i < nets2route.size(); i++)
-                    batches[result.batch_of_net[i]].emplace_back(nets2route[i]);
-                commit_check_rounds = result.commit_check_rounds;
-                max_rounds_per_batch = result.max_rounds_per_batch;
+                    batches[batch_index[result.batch_of_net[i]]].emplace_back(nets2route[i]);
                 on_gpu = true;
             }
         }
@@ -433,8 +438,9 @@ vector<vector<int>> generate_batches_rsmt(vector<int> &nets2route, int MAX_BATCH
     if(LOG) cout << setw(40) << "Batch" << setw(20) << "#Nets" << setw(20) << "#Batches" << setw(20) << "Time" << endl;
     if(LOG) cout << setw(40) << (on_gpu ? "Generation (GPU)" : "Generation (CPU)") << setw(20) << nets2route.size() << setw(20) << batches.size() << setw(20) << setprecision(2) << _time << endl;
     if(LOG && on_gpu)
-        printf("        commit-check rounds: %d total, %d max per batch; mark collection %.3fs\n",
-               commit_check_rounds, max_rounds_per_batch, collect_seconds);
+        printf("        rounds %d, %.1f commits per net, wavefront %d, %d batches open at once (%d retired early); mark collection %.3fs\n",
+               gpu_result.rounds, (double) gpu_result.commits / max<size_t>(1, nets2route.size()),
+               gpu_result.wavefront, gpu_result.ring_slots, gpu_result.retired, collect_seconds);
 
     if(gpu_batch_gen_validate()) {
         const bool ok = batches_are_conflict_free(batches);
