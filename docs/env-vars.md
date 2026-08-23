@@ -5,7 +5,7 @@
 - 세션 고정 : `setenv VAR val`
 - 빌드·실행 절차 : [README](../README.md)
 
-사용 예 (tree-center 없이 나머지 최적화만):
+- 사용 예 (tree-center 없이 나머지 최적화만) :
 
 ```bash
 env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BENCH/bsg_chip.cap -net $BENCH/bsg_chip.net -out bsg.out
@@ -29,7 +29,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 | `INSTANTGR_GPU_FLUTE_MAX_DEGREE` | 0 (무제한) | 이 차수 초과는 CPU FLUTE로 우회 |
 | `INSTANTGR_INCREMENTAL_VCOST_MAX_DIRTY` | 0.20 | dirty-cell 리스트 크기 상한(전체 그리드 대비 비율, (0,1]) |
 
-고정값 (환경 변수 없음):
+고정값 (환경 변수 없음) :
 
 - GPU/CPU FLUTE 분기 차수 : 10 (`DEGREE + 1`) — `src/database_cuda.hpp`의 `GPU_FLUTE_MIN_DEGREE`
 - break score 계산 : O(1) precompute — `src/gpu_flute.hpp`의 `precompute_break_arrays()`

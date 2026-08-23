@@ -1,6 +1,6 @@
 # InstantGR-2026
 
-Optimizing InstantGR for faster global routing.
+- 목적 : InstantGR을 더 빠른 global routing으로 최적화
 
 ## 진행 상황 <sub>최신 2026-08-23</sub>
 
@@ -11,8 +11,8 @@ Optimizing InstantGR for faster global routing.
 | vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
 | GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
 
-- 전체 : `mempool_cluster_ranking` 233s → **119s (1.97×)**, ISPD score 변화 없음
-- nsys 검증 : 논문 원본에서 vcost+presum이 **wall의 33%, GPU 작업의 69%** — 절감 수치 확인됨
+- 전체 : `mempool_group` 62.38s → **31.36s (1.99×)**, `mempool_cluster_ranking` 225.28s → **119.93s (1.88×)**, ISPD score 변화 없음
+- 항목별 분해 : **[docs/2026-08-23-best-result.md](docs/2026-08-23-best-result.md)** · 측정 절차 : [docs/measure-runtime.md](docs/measure-runtime.md)
 - 상세 : **[docs/optimizations.md](docs/optimizations.md)**, 최신 작업 : **[docs/2026-08-22-opt.md](docs/2026-08-22-opt.md)**
 
 ---
@@ -42,13 +42,13 @@ setenv ARCH sm_75
 - 지정 후 프로그램 내부에서는 항상 device 0
 - `-arch` : 실제 사용 GPU와 일치시킬 것
 
-세션 전체 적용:
+- 세션 전체 적용 :
 
 ```bash
 setenv CUDA_VISIBLE_DEVICES 0
 ```
 
-한 번만 적용 (tcsh는 `VAR=val cmd` 문법 없음 → `env` 사용):
+- 한 번만 적용 (tcsh는 `VAR=val cmd` 문법 없음 → `env` 사용) :
 
 ```bash
 env CUDA_VISIBLE_DEVICES=0 ./InstantGR.opt -cap $BENCH/mempool_cluster_ranking.cap -net $BENCH/mempool_cluster_ranking.net -out test.out
@@ -110,6 +110,8 @@ env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh
 ## 5. 참고
 
 - 환경 변수 전체 : [docs/env-vars.md](docs/env-vars.md)
+- runtime 측정 절차 (재사용) : [docs/measure-runtime.md](docs/measure-runtime.md)
+- 최신 결과 : [docs/2026-08-23-best-result.md](docs/2026-08-23-best-result.md)
 - nsys 프로파일링 (vcost/presum 검증) : [docs/profiling-nsys.md](docs/profiling-nsys.md)
 - 서버 전용 경로·명령 : [docs/my-setup.md](docs/my-setup.md)
 - 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf) (ICCAD), [InstantGR(Journal).pdf](docs/papers/InstantGR%28Journal%29.pdf) (TCAD, 확장판), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
