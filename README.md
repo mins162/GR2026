@@ -2,15 +2,16 @@
 
 Optimizing InstantGR for faster global routing.
 
-## 진행 상황 <sub>최신 2026-08-20</sub>
+## 진행 상황 <sub>최신 2026-08-23</sub>
 
 | 최적화 | 결과 | 상태 |
 | --- | --- | --- |
 | FLUTE (GPU-FLUTE) | RSMT **−35~65%** | 완료 |
 | Augmented DAG depth | depth **−23%**, runtime 변화 없음 | critical path 분석 예정 |
-| vcost / presum | 전체 runtime **−30~40%** | 시간 측정 방식 재검토 후 재측정 예정 |
+| vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
 
 - 전체 : `mempool_cluster_ranking` 233s → **141s (1.66×)**, ISPD score 변화 없음
+- 다음 병목 : `mempool_group` 기준 wall의 **70%가 GPU 커널이 안 도는 시간** (호스트 측)
 - 상세 : **[docs/optimizations.md](docs/optimizations.md)**
 
 ---

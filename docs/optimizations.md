@@ -1,6 +1,6 @@
 # InstantGR 최적화 정리
 
-- 최종 업데이트 : **2026-08-20**
+- 최종 업데이트 : **2026-08-23**
 - 기준 자료 : 2026-08-20 미팅 발표 (`0820 논문.pptx`, 슬라이드 21~33)
 - 대상 : ISPD 2024 global routing (InstantGR)
 - 벤치마크 : `mempool_group` (3.2M net), `mempool_cluster_ranking` (10.6M net)
@@ -9,7 +9,7 @@
 | --- | --- | --- | --- |
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
 | 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
-| 3 | vcost / presum 계산 절감 | runtime·품질 양호, 시간 측정 방식 재검토 후 재측정 예정 | 2026-08-20 |
+| 3 | vcost / presum 계산 절감 | **nsys 재측정 완료 — 기존 수치 확인됨** | 2026-08-23 |
 
 ---
 
@@ -137,16 +137,58 @@
   - `mempool_group` : 397,600,453 → 397,601,920 (노이즈 수준)
   - `mempool_cluster_ranking` : 1,780,762,387 → 1,780,724,749 (+0.0002%, 노이즈)
 
-### 문제 및 다음 작업
+### 재측정 — nsys (2026-08-23) <sub>결론 : 기존 수치가 맞았음</sub>
 
-- **선배님 피드백 : 시간 측정 방식이 잘못되었음(난 맞는거같은데)**
-  - 위 수치는 그 측정 방식으로 얻은 값 → 그대로 신뢰할 수 없음
-- 다음 작업 : **올바른 방식으로 재측정** → [profiling-nsys.md](profiling-nsys.md) (브랜치 `profile/nsys-vcost-presum`)
-  - 코드가 찍는 `cudaEvent` 대신 **nsys(CUPTI)** 로 커널별 실제 GPU 시간·실행 횟수를 받는다
-  - 이벤트 쌍은 읽을 때 `cudaEventSynchronize()`가 필요해 파이프라인 자체를 바꾼다 (Stage 1 배치 루프는 원래 sync가 없다)
-  - `full`(전체 재계산) / `incr`(현재) / `paper`(논문 원본) 3종을 같은 조건에서 비교
-  - 재측정 후 위 표 갱신
-- 결론 자체(runtime 감소 + 품질 유지)는 유지되지만, 구간별 절감률 수치는 재측정 값으로 대체할 것
+- 방법 : [profiling-nsys.md](profiling-nsys.md), 브랜치 `profile/nsys-vcost-presum`
+- 코드가 찍는 `cudaEvent` 대신 **nsys(CUPTI)** 가 드라이버에서 직접 받은 커널별 시간
+- 벤치마크 `mempool_group`, TITAN RTX (sm_75), 그리드 `cells=38,763,846` · `tracks=18,578`
+- config
+  - `paper` : `baseline/` 논문 원본
+  - `full` : `src/` + incremental 둘 다 off (전체 재계산)
+  - `incr` : `src/` + incremental 둘 다 on (현재)
+  - `full` / `incr`은 GPU-FLUTE를 양쪽 다 켜서 vcost·presum만 변수로 남김
+
+| config | wall | GPU busy | 커널 안 도는 시간 | vcost | presum | vcost+presum |
+| --- | --- | --- | --- | --- | --- | --- |
+| `paper` | — | 24.69s | — | 15.14s | 3.75s | **18.89s = GPU의 76.5%** |
+| `full` | 56.35s | 29.58s | 26.77s | 10.92s | 8.93s | 19.85s = GPU의 67.1%, wall의 35.2% |
+| `incr` | 37.13s | 11.08s | 26.05s | 0.17s | 0.86s | 1.03s = GPU의 9.3%, wall의 2.8% |
+
+- **논문 원본에서 vcost+presum은 전체 GPU 작업의 76.5%다.** 나머지 GPU 커널을 다 합쳐도 5.8s.
+  단일 최대 커널이 `update_vcost_ispd24` (9.78s), 그다음이 `update_wcost_cuda_ispd24` (5.36s).
+  → "원래 오래 안 걸린다"는 전제는 이 디자인·이 GPU에서는 성립하지 않는다.
+- **`full` → `incr` : wall 56.35 → 37.13s (−34.1%)**, GPU −18.50s, vcost+presum −18.82s.
+  wall 감소와 GPU 감소가 거의 1:1 → 기존 −30~40%는 계측 아티팩트가 아니었다.
+- `paper` vs `full` 총량이 18.89 vs 19.85s로 거의 같다. wcost-presum fusion은 일을 옮겼을 뿐
+  (`paper`는 wcost 5.36 + vcost 9.78 / presum 3.75, `full`은 vcost 10.92 / presum 8.93 —
+  presum이 wcost를 인라인으로 다시 계산). 즉 `full`은 `paper`의 공정한 대역이고, fusion 자체는
+  non-incremental 조건에서 ~1s 손해지만 track 단위 skip을 가능하게 한다.
+- 기존 `cudaEvent` 측정이 Stage 2만 덮고 있었던 점도 확인됐다. `update_cost` 런치가
+  **1467 = Stage 1의 601 + Stage 2의 866** 으로 갈린다 — Stage 1 몫 41%는 기존 표에 아예 없었다.
+
+### 남은 문제 — 이제 병목은 호스트다
+
+| config | wall | GPU busy | 커널 안 도는 시간 |
+| --- | --- | --- | --- |
+| `full` | 56.35s | 29.58s (52.5%) | 26.77s (47.5%) |
+| `incr` | 37.13s | 11.08s (29.8%) | **26.05s (70.2%)** |
+
+- 호스트 구간 26s는 이 최적화와 **무관하게 고정**이다 (26.77 → 26.05).
+- 즉 지금 37s 런타임에서 GPU 커널을 아무리 더 줄여도 상한이 11s다.
+- `cudaDeviceSynchronize`가 `incr`에서 7.51s / 19,599회. 커널 런치는 51,681회.
+- 다음 측정 : `--cpu`로 호스트 샘플링 → 입력 파싱 / 배치 생성 / CPU FLUTE / 출력 중 어디인지.
+
+### 확인 필요 — Stage 2 DP가 논문보다 2배 비싸다
+
+| | `paper` | `incr` |
+| --- | --- | --- |
+| `Lshape_route_node_cuda` 런치 | 8,328 | 18,729 |
+| bottom-up DP GPU 시간 | 2.30s | 4.68s |
+
+- Stage 2 depth 레벨 런치가 2.2배. GPU-FLUTE가 만든 트리가 augmented DAG depth를 늘렸을
+  가능성 → **최적화 2번(DAG depth)과 직결**.
+- 단, Stage 2가 다시 라우팅하는 net 집합 자체가 다를 수 있다 (`commit_wire_demand` 런치가
+  `paper` 704 vs `incr` 866). 원인 분리 필요.
 
 ---
 
@@ -159,7 +201,9 @@
   - center를 미리 찾아둬도 augment 시 center가 이동하는 문제
   - score 개선 : augment를 더 많이 생성하거나 다른 탐색 방법 추가
   - critical depth 자체를 줄이기 (평균 depth는 23% 감소했으나 runtime 변화 거의 없음)
-- **최적화 3 재측정** : 위 3번 참고
+- **호스트 병목 분석** : `incr` 기준 wall의 70%가 커널이 안 도는 시간. GPU 쪽에 남은 여지는 11s뿐
+  - `./tools/nsys_profile.sh -d mempool_group -c incr --cpu` 로 어느 호스트 구간인지 확인
+- **Stage 2 DP 런치 2배 건** : 위 3번 마지막 항목
 
 ---
 
@@ -168,3 +212,4 @@
 | 날짜 | 내용 |
 | --- | --- |
 | 2026-08-20 | 최적화 1·2·3 정리 (미팅 발표). 2번 critical path 분석, 3번 재측정 과제로 남김 |
+| 2026-08-23 | 3번을 nsys로 재측정 — 기존 수치 확인. 호스트 병목·Stage 2 DP 런치 건을 새로 발견 |
