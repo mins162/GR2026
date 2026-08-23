@@ -141,54 +141,55 @@
 
 - 방법 : [profiling-nsys.md](profiling-nsys.md), 브랜치 `profile/nsys-vcost-presum`
 - 코드가 찍는 `cudaEvent` 대신 **nsys(CUPTI)** 가 드라이버에서 직접 받은 커널별 시간
-- 벤치마크 `mempool_group`, TITAN RTX (sm_75), 그리드 `cells=38,763,846` · `tracks=18,578`
+- `mempool_group`, TITAN RTX (sm_75), `cells=38,763,846` · `tracks=18,578`, 배치 = Stage 1 601 + Stage 2 866
 - config
-  - `paper` : `baseline/` 논문 원본
+  - `paper` : `baseline/` 논문 원본 (CPU FLUTE)
   - `full` : `src/` + incremental 둘 다 off (전체 재계산)
   - `incr` : `src/` + incremental 둘 다 on (현재)
   - `full` / `incr`은 GPU-FLUTE를 양쪽 다 켜서 vcost·presum만 변수로 남김
 
 | config | wall | GPU busy | 커널 안 도는 시간 | vcost | presum | vcost+presum |
 | --- | --- | --- | --- | --- | --- | --- |
-| `paper` | — | 24.69s | — | 15.14s | 3.75s | **18.89s = GPU의 76.5%** |
-| `full` | 56.35s | 29.58s | 26.77s | 10.92s | 8.93s | 19.85s = GPU의 67.1%, wall의 35.2% |
-| `incr` | 37.13s | 11.08s | 26.05s | 0.17s | 0.86s | 1.03s = GPU의 9.3%, wall의 2.8% |
+| `paper` | 64.27s | 30.59s (47.6%) | 33.68s (52.4%) | 16.99s | 4.20s | **21.19s = wall의 33.0%** (GPU의 69.3%) |
+| `full` | 56.24s | 29.51s (52.5%) | 26.73s (47.5%) | 10.88s | 8.93s | 19.81s = wall의 35.2% (GPU의 67.1%) |
+| `incr` | 36.77s | 10.99s (29.9%) | 25.78s (70.1%) | 0.17s | 0.85s | 1.02s = wall의 2.8% (GPU의 9.3%) |
 
-- **논문 원본에서 vcost+presum은 전체 GPU 작업의 76.5%다.** 나머지 GPU 커널을 다 합쳐도 5.8s.
-  단일 최대 커널이 `update_vcost_ispd24` (9.78s), 그다음이 `update_wcost_cuda_ispd24` (5.36s).
-  → "원래 오래 안 걸린다"는 전제는 이 디자인·이 GPU에서는 성립하지 않는다.
-- **`full` → `incr` : wall 56.35 → 37.13s (−34.1%)**, GPU −18.50s, vcost+presum −18.82s.
+- **논문 원본에서 vcost+presum은 wall의 33%, GPU 작업의 69%다.**
+  단일 최대 커널이 `update_vcost_ispd24` (10.98s), 그다음이 `update_wcost_cuda_ispd24` (6.02s),
+  `compute_presum` (4.20s). 나머지 GPU 커널을 다 합쳐야 9.4s.
+  → "원래 오래 안 걸린다"는 전제는 이 디자인·이 GPU에서 성립하지 않는다.
+- **`full` → `incr` : wall 56.24 → 36.77s (−34.6%)**, GPU −18.52s, vcost+presum −18.79s.
   wall 감소와 GPU 감소가 거의 1:1 → 기존 −30~40%는 계측 아티팩트가 아니었다.
-- `paper` vs `full` 총량이 18.89 vs 19.85s로 거의 같다. wcost-presum fusion은 일을 옮겼을 뿐
-  (`paper`는 wcost 5.36 + vcost 9.78 / presum 3.75, `full`은 vcost 10.92 / presum 8.93 —
-  presum이 wcost를 인라인으로 다시 계산). 즉 `full`은 `paper`의 공정한 대역이고, fusion 자체는
-  non-incremental 조건에서 ~1s 손해지만 track 단위 skip을 가능하게 한다.
-- 기존 `cudaEvent` 측정이 Stage 2만 덮고 있었던 점도 확인됐다. `update_cost` 런치가
-  **1467 = Stage 1의 601 + Stage 2의 866** 으로 갈린다 — Stage 1 몫 41%는 기존 표에 아예 없었다.
+- `paper` → `incr` 는 −42.8%지만 여기엔 GPU-FLUTE 몫이 섞여 있다.
+- `paper`와 `full`의 vcost+presum 총량이 21.19 vs 19.81s로 비슷하다. wcost-presum fusion은 일을
+  옮겼을 뿐 (`paper` = wcost 6.02 + vcost 10.98 / presum 4.20, `full` = vcost 10.88 / presum 8.93 —
+  presum이 wcost를 인라인으로 재계산). `full`이 `paper`의 공정한 대역이고, fusion 자체는
+  non-incremental 조건에서 ~1.4s 이득이며 track 단위 skip을 가능하게 한다.
+- 기존 `cudaEvent` 측정은 **Stage 1을 아예 안 보고 있었다**. `update_cost` 런치가
+  **1467 = Stage 1의 601 + Stage 2의 866** 으로 갈린다 — Stage 1 몫 41%가 기존 표에 없었다.
+  방식이 틀린 게 아니라 범위가 좁았고, 방향은 과소 보고였다.
+- GPU-FLUTE의 이득은 **커널 표에 안 보인다**. GPU FLUTE 커널 합계는 0.08s뿐이고, 효과는
+  `paper` 33.68s → `full` 26.73s 즉 **호스트 idle 6.95s 감소**로 나타난다.
+  기존 RSMT 표의 13.7s → 7.27s (−6.4s)와 일치한다.
 
 ### 남은 문제 — 이제 병목은 호스트다
 
-| config | wall | GPU busy | 커널 안 도는 시간 |
-| --- | --- | --- | --- |
-| `full` | 56.35s | 29.58s (52.5%) | 26.77s (47.5%) |
-| `incr` | 37.13s | 11.08s (29.8%) | **26.05s (70.2%)** |
+- `incr` 기준 wall 36.77s 중 **25.78s(70.1%)가 GPU 커널이 안 도는 시간**이다.
+- 이 값은 최적화와 **무관하게 고정**이다 : `full` 26.73s → `incr` 25.78s.
+- 즉 GPU 커널을 앞으로 아무리 더 줄여도 상한이 11s다.
+- `cudaDeviceSynchronize` 7.43s / 19,599회, 커널 런치 51,681회, `cudaMemcpy` 2.19s / 10,588회.
+- 다음 측정 : `./tools/nsys_profile.sh -d mempool_group -c incr --cpu` +
+  요약의 "the router's own stage timing" 표로 어느 스테이지인지 좁힌다.
 
-- 호스트 구간 26s는 이 최적화와 **무관하게 고정**이다 (26.77 → 26.05).
-- 즉 지금 37s 런타임에서 GPU 커널을 아무리 더 줄여도 상한이 11s다.
-- `cudaDeviceSynchronize`가 `incr`에서 7.51s / 19,599회. 커널 런치는 51,681회.
-- 다음 측정 : `--cpu`로 호스트 샘플링 → 입력 파싱 / 배치 생성 / CPU FLUTE / 출력 중 어디인지.
+### 트레이스 검증은 필수
 
-### 확인 필요 — Stage 2 DP가 논문보다 2배 비싸다
+`paper` config를 처음 돌렸을 때 `compute_presum` 런치가 1305로 나왔다 — 실제 배치 수 1466보다
+161 적다. `quick_exit()`이 CUPTI flush를 건너뛰어 트레이스 뒷부분이 **조용히 잘린** 것이고,
+`tools/profiling_exit.h`로 고쳤다. 그 잘린 트레이스에서는 Stage 2 DP 런치가 8,328로 보여
+"src가 논문보다 DP를 2배 돌린다"는 잘못된 결론이 나왔었다. 온전한 트레이스에서는
+**`paper` 18,573 vs `incr` 18,729, DP 시간 4.69 vs 4.65s로 사실상 동일**하다.
 
-| | `paper` | `incr` |
-| --- | --- | --- |
-| `Lshape_route_node_cuda` 런치 | 8,328 | 18,729 |
-| bottom-up DP GPU 시간 | 2.30s | 4.68s |
-
-- Stage 2 depth 레벨 런치가 2.2배. GPU-FLUTE가 만든 트리가 augmented DAG depth를 늘렸을
-  가능성 → **최적화 2번(DAG depth)과 직결**.
-- 단, Stage 2가 다시 라우팅하는 net 집합 자체가 다를 수 있다 (`commit_wire_demand` 런치가
-  `paper` 704 vs `incr` 866). 원인 분리 필요.
+→ 어떤 수치든 쓰기 전에 **런치 수를 배치 수와 대조**할 것.
 
 ---
 
@@ -203,7 +204,7 @@
   - critical depth 자체를 줄이기 (평균 depth는 23% 감소했으나 runtime 변화 거의 없음)
 - **호스트 병목 분석** : `incr` 기준 wall의 70%가 커널이 안 도는 시간. GPU 쪽에 남은 여지는 11s뿐
   - `./tools/nsys_profile.sh -d mempool_group -c incr --cpu` 로 어느 호스트 구간인지 확인
-- **Stage 2 DP 런치 2배 건** : 위 3번 마지막 항목
+- **`mempool_cluster_ranking` nsys 재측정** : 위 표를 최대 디자인으로 확장
 
 ---
 

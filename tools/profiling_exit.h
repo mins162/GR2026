@@ -6,10 +6,10 @@
 // (#ifdef INSTANTGR_NVTX in main.cpp); baseline/ is kept byte-identical to the
 // paper, so redirect the call at build time instead.
 //
-// This is insurance, not a diagnosed fix.  A ~3s paper run did come back with
-// an empty trace and a ~66s one did not, which fits a buffer that had not been
-// streamed out yet at exit -- but that was never confirmed, and the long run
-// worked without this shim.  Keep it because a truncated trace is silent.
+// Confirmed on mempool_group: the same ~64s paper run traced without this shim
+// reported 1305 compute_presum launches, with it 1466 -- which is exactly the
+// 601 + 865 batches the run actually executes.  A 3s run came back empty
+// altogether.  Truncation is silent, so the shim is not optional.
 //
 // <cstdlib> is pulled in first on purpose: defining the macro before the real
 // declaration is parsed would mangle the declaration itself.

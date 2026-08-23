@@ -11,6 +11,7 @@ Optimizing InstantGR for faster global routing.
 | vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
 
 - 전체 : `mempool_cluster_ranking` 233s → **141s (1.66×)**, ISPD score 변화 없음
+- nsys 검증 : 논문 원본에서 vcost+presum이 **wall의 33%, GPU 작업의 69%** — 절감 수치 확인됨
 - 다음 병목 : `mempool_group` 기준 wall의 **70%가 GPU 커널이 안 도는 시간** (호스트 측)
 - 상세 : **[docs/optimizations.md](docs/optimizations.md)**
 

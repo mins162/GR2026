@@ -80,9 +80,13 @@ def read_stats(path):
     return out
 
 
+# "DAG/detour route                  18.42 s   50.1 %" from runtime_breakdown().
+STAGE_ROW = re.compile(r"^(.*?\S)\s+([\d.]+) s\s+([\d.]+) %\s*$")
+
+
 def read_log(path):
     """Wall clock, grid geometry and config line from the router's own stdout."""
-    info = {"wall": None, "grid": None, "config": None, "batches": []}
+    info = {"wall": None, "grid": None, "config": None, "batches": [], "stages": []}
     if not os.path.exists(path):
         return info
     with open(path, errors="replace") as f:
@@ -101,6 +105,10 @@ def read_log(path):
                 nums = re.findall(r"\d+", line)
                 if len(nums) >= 2:
                     info["batches"].append(int(nums[1]))
+            else:
+                m = STAGE_ROW.match(line.rstrip())
+                if m and m.group(1) != "total":
+                    info["stages"].append((m.group(1), float(m.group(2)), float(m.group(3))))
     return info
 
 
@@ -172,6 +180,25 @@ def report(out_dir, tag):
                 print("  %-46s %s s %12d%s" % (
                     name.split("(")[0][:46], fmt_s(total), num,
                     "  (%.1f%% of wall)" % (100 * total / 1e9 / wall) if wall else ""))
+
+    # Where the idle wall clock sits.  The router already times its own stages
+    # end to end, so pair that with the kernel table instead of guessing: a
+    # stage with lots of wall and no kernels underneath is host work.
+    if log["stages"]:
+        print()
+        print("  the router's own stage timing (host wall clock, GPU wait included)")
+        for name, seconds, pct in log["stages"]:
+            print("  %-46s %8.2f s %7.1f%%" % (name.strip()[:46], seconds, pct))
+
+    osrt = (glob.glob(os.path.join(out_dir, tag + "_osrt_sum.csv")) or
+            glob.glob(os.path.join(out_dir, tag + "_osrtsum.csv")))
+    if osrt:
+        orows = read_stats(osrt[0])
+        if orows:
+            print()
+            print("  OS runtime calls (--cpu run; mostly blocking, so this is waiting)")
+            for name, total, num in sorted(orows, key=lambda r: -r[1])[:8]:
+                print("  %-46s %s s %12d" % (name.split("(")[0][:46], fmt_s(total), num))
 
     nvtx = (glob.glob(os.path.join(out_dir, tag + "_nvtx_gpu_proj_sum.csv")) or
             glob.glob(os.path.join(out_dir, tag + "_nvtx_sum.csv")))
