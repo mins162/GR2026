@@ -9,11 +9,11 @@ Optimizing InstantGR for faster global routing.
 | FLUTE (GPU-FLUTE) | RSMT **−35~65%** | 완료 |
 | Augmented DAG depth | depth **−23%**, runtime 변화 없음 | critical path 분석 예정 |
 | vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
+| GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
 
-- 전체 : `mempool_cluster_ranking` 233s → **141s (1.66×)**, ISPD score 변화 없음
+- 전체 : `mempool_cluster_ranking` 233s → **119s (1.97×)**, ISPD score 변화 없음
 - nsys 검증 : 논문 원본에서 vcost+presum이 **wall의 33%, GPU 작업의 69%** — 절감 수치 확인됨
-- 다음 병목 : `mempool_group` 기준 wall의 **70%가 GPU 커널이 안 도는 시간** (호스트 측)
-- 상세 : **[docs/optimizations.md](docs/optimizations.md)**
+- 상세 : **[docs/optimizations.md](docs/optimizations.md)**, 최신 작업 : **[docs/2026-08-22-opt.md](docs/2026-08-22-opt.md)**
 
 ---
 
@@ -112,5 +112,5 @@ env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh
 - 환경 변수 전체 : [docs/env-vars.md](docs/env-vars.md)
 - nsys 프로파일링 (vcost/presum 검증) : [docs/profiling-nsys.md](docs/profiling-nsys.md)
 - 서버 전용 경로·명령 : [docs/my-setup.md](docs/my-setup.md)
-- 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
+- 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf) (ICCAD), [InstantGR(Journal).pdf](docs/papers/InstantGR%28Journal%29.pdf) (TCAD, 확장판), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
 - baseline upstream 커밋 : `baseline/UPSTREAM_COMMIT.txt`

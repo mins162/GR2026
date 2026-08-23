@@ -10,6 +10,7 @@
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
 | 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
 | 3 | vcost / presum 계산 절감 | **nsys 재측정 완료 — 기존 수치 확인됨** | 2026-08-23 |
+| 4 | GPU batch generation | `mempool_group` 전체 −11.9%, `mempool_cluster_ranking` −5.9% | 2026-08-22 |
 
 ---
 
@@ -178,8 +179,28 @@
 - 이 값은 최적화와 **무관하게 고정**이다 : `full` 26.73s → `incr` 25.78s.
 - 즉 GPU 커널을 앞으로 아무리 더 줄여도 상한이 11s다.
 - `cudaDeviceSynchronize` 7.43s / 19,599회, 커널 런치 51,681회, `cudaMemcpy` 2.19s / 10,588회.
-- 다음 측정 : `./tools/nsys_profile.sh -d mempool_group -c incr --cpu` +
-  요약의 "the router's own stage timing" 표로 어느 스테이지인지 좁힌다.
+
+호스트 27.2s의 내역 (`mempool_group`, `incr`, wall 37.04s 런).
+**이 프로파일은 4번(GPU batch generation) 반영 전 코드**다:
+
+| 구간 | 시간 | wall % | 현재 상태 |
+| --- | --- | --- | --- |
+| batch generation (S1 3.33 + S2 3.55) | 6.88s | 18.6% | **4번에서 해결됨** → 약 2.0s |
+| DAG 구성 (S1 DFS 1.75 + S2 preprocessing 2.09 + S2 host prep/upload 2.73) | 6.57s | 17.7% | 남음 |
+| CPU FLUTE, degree < 10 (overlapped) | 4.94s | 13.3% | 남음 |
+| input 파싱 | 4.79s | 12.9% | 남음 |
+| 출력 (finish nets + close output) | 2.13s | 5.8% | 남음 |
+| build CUDA database | 1.88s | 5.1% | 남음 |
+| **호스트 합** | **27.19s** | **73.4%** | |
+| GPU route batches (S1 3.23 + S2 5.82) | 9.05s | 24.4% | |
+
+- 이 프로파일에서 최대 호스트 항목이던 batch generation은 **4번이 이미 GPU로 옮겼다**
+  (S1 3.60 → 0.80s, S2 3.81 → 1.18s). 프로파일이 가리킨 1순위와 실제로 한 작업이 일치한다.
+- 그걸 빼면 남은 호스트 1순위는 **DAG 구성 6.57s**, 그다음 CPU FLUTE 4.94s, input 파싱 4.79s.
+- DAG 구성은 세 스테이지로 흩어져 있어 한 번에 걷어내기 어렵다.
+- CPU FLUTE 4.94s는 이미 overlap 중이라, 추가 이득은 GPU FLUTE 커버리지를 넓혀야 나온다
+  (현재 degree ≥ 10만 GPU).
+- **다음 측정 : 4번이 들어간 현재 main에서 다시 프로파일**해 위 표를 갱신할 것.
 
 ### 트레이스 검증은 필수
 
@@ -193,6 +214,138 @@
 
 ---
 
+## 4. GPU batch generation <sub>2026-08-22</sub>
+
+- 근거 논문 : InstantGR journal (TCAD 2026) Section III-D *GPU-Accelerated Batch Generation*
+- 문제 : batch generation이 완전 순차 — net을 우선순위(hpwl 내림차순) 순으로 훑으며 충돌 없는 첫 batch에 넣음
+- 구현 위치 : `src/gpu_batch_gen.hpp`, 호출부는 `src/database_cuda.hpp`의 `generate_batches_rsmt()`
+
+### 1차 시도 : 논문 스케줄링 그대로 → **실패**
+
+batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 commit → check → rule out.
+
+| 구간 (`mempool_group`) | CPU first-fit | 논문 방식 |
+| --- | --- | --- |
+| S1 batch generation | 3.15s | **5.51s** |
+| S2 batch generation | 3.50s | **12.93s** |
+
+(구조 개선 실측 : 2차 S1 3.44 / S2 13.41s, 3차 S1 3.62 / S2 13.68s — 아래 3·4차 참고)
+
+- 원인 : net 하나가 "자기가 최종적으로 들어갈 batch 번호"만큼 full commit을 반복
+  - S2는 net 197k에 batch 869개 → net당 평균 **~430회** commit, 거기에 batch당 commit-check 라운드 5.1회가 곱해짐
+- CPU가 빠른 이유는 **실패가 싸기** 때문 : `has_conflict`가 point 몇 개 읽고 첫 충돌에서 리턴
+
+### 2차 : 실패를 싸게 만든 구조 (현재 구현)
+
+논문의 **commit-check 우선순위 중재**(`atomicMin`으로 높은 우선순위가 셀 선점 → 자기 point를 전부 소유한 net만 배정)는 그대로 두고, batch를 하나씩 닫는 스케줄링만 CPU first-fit 구조로 되돌렸습니다.
+
+- **window** : batch 여러 개를 동시에 열어두고 bitmap을 유지 → 새 batch뿐 아니라 예전 batch에도 들어갈 수 있음
+- **wavefront** : 우선순위 앞쪽 일부만 in-flight. batch 크기에 맞춰 매 라운드 자동 조절 (배정 수의 2~8배)
+- **pick** : 각 net이 자기가 멈춘 지점부터 열린 batch를 스캔 (막힌 batch는 계속 막힘) → 첫 번째로 point가 비어 있는 batch 선택. **실패는 bitmap 읽기 몇 번, commit 없음**
+- **commit / check** : 고른 batch 하나에만 라운드당 1회 commit
+- 열린 batch에 다 못 들어가면 새 batch를 열고, ring이 꽉 차면 가장 오래된 batch를 닫음
+
+효과 (호스트 시뮬레이션, net 60k): net당 commit이 **6~8회** — 논문 방식의 수백 회 대비 두 자릿수 배 감소.
+
+### 3차 : 라운드 오버헤드 제거
+
+2차 실측(`mempool_group`)에서 S1 5.51 → **3.44s**(CPU 3.15), S2는 12.93 → **13.41s**로 거의 그대로였습니다. 로그를 보면 net당 commit은 이미 2.8 / 5.1회로 싼데 라운드가 1847 / 2761회 — **라운드당 4.9ms**가 나왔습니다. 커널 자체가 아니라 라운드 고정비용이 전부였습니다.
+
+- 원인 : `thrust::copy_if`가 호출마다 임시 버퍼를 `cudaMalloc`/`cudaFree` — `cudaFree`는 디바이스 전체를 동기화하고, 수 GB를 잡고 있는 상태에선 ms 단위
+- 조치
+  - 미배치 리스트 compaction을 **호스트에서** 수행 (status 다운로드 + 남은 net 업로드, 라운드당 수십 KB) → thrust 의존 제거
+  - 항상 빈 batch 하나를 열어둬서 "새 batch 필요?" D2H 왕복 제거
+  - pending 리스트는 head 오프셋으로 관리 → 라운드마다 tail을 복사하지 않음
+- 라운드 수는 batch 수의 약 3배로 **구조적으로 고정**(wavefront 크기와 무관, 시뮬레이션에서 확인) → 라운드당 비용을 줄이는 것 외에 방법이 없음
+- wavefront는 좁을수록 commit이 줄고 라운드 수는 그대로 → 하한 1024, 배정 수의 8배 초과 시 축소
+
+### 기하·판정은 CPU 경로 그대로
+
+- mark : h/v RSMT segment + point 주변 4셀 십자(`mark_3x3`)
+- 충돌 판정 : 자기 **point만** 검사 (segment가 남의 셀을 지나가는 것은 허용)
+- 불변식 : batch 안에서 어떤 net의 point도 **자기보다 앞선 멤버**의 mark에 덮이지 않음
+- batch 당 net 수 상한(Stage 1 `1,000,000` / Stage 2 `300,000`)은 배정 수에 적용
+
+### 검증
+
+- 호스트 시뮬레이션 (커널을 CPU에서 순차 실행, 무작위 net, 최대 60k net)
+  - 모든 net이 정확히 한 batch에 배정 · batch 내 충돌 없음 · 상한 준수 · 재실행 시 동일 결과
+  - batch 수가 CPU first-fit과 거의 동일 (18/18, 152/152, 135/135, 94/94; 최악 +3)
+- 실기 검증 : `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` — 1차 시도 실측에서 `conflict-free: yes`, batch 602 vs CPU 601 / 869 vs 868, score 397,604,233 (노이즈)
+- 폴백 : GPU 메모리 부족·이상 상황이면 경고를 찍고 CPU 경로로 자동 복귀
+- 로그 : `rounds N, X commits per net, wavefront W, K batches open at once (R retired early)`
+
+### 4차 : net당 warp
+
+3차 실측에서도 S2는 13.68s로 그대로였습니다 (S1 3.62s). 라운드당 **5.07ms** — thrust 제거로는 안 움직였으니 원인은 커널 안이었습니다.
+
+- 원인 : **커널이 net당 스레드 1개**. wavefront 1024면 스레드가 32워프뿐이라 (TITAN RTX는 SM만 72개) 지연이 하나도 안 숨겨짐
+  - pick : net 하나가 열린 batch 871개를 **순차 의존 체인**으로 훑음 → 스레드당 수천 번의 dependent load
+  - commit / check / release : augmented DAG net은 mark가 수백~수천 개인데 그걸 스레드 하나가 다 순회
+- 조치 : pick / commit / check / stamp / release 전부 **net당 warp(32 레인)**
+  - pick : 레인이 batch 32개를 동시에 테스트하고 `__ballot_sync`로 가장 낮은 빈 batch 선택 → 체인 길이 1/32
+  - commit / stamp / release : 레인이 net의 segment·point를 나눠 처리 (전부 순서 무관 연산이라 결과 동일)
+  - check : 레인이 point를 나눠 검사하고 ballot으로 합침
+  - wavefront 1024 → 스레드 32k
+- `kPickLanes = 1`로 두면 기존 순차 동작과 동일 — 호스트 시뮬레이션은 이 설정으로 검증
+
+### 결과 — `mempool_group` (5차 반영 후)
+
+| 구간 | CPU first-fit | GPU | 개선 |
+| --- | --- | --- | --- |
+| S1 batch generation | 3.60s | **0.80s** | −78% |
+| S2 batch generation | 3.81s | **1.18s** | −69% |
+| 전체 runtime | 37.89s | **31.55s** | −16.7% |
+
+- batch 수 : S1 603 vs CPU 601, S2 869 vs 866
+- **다운스트림 영향 없음** : 4차 시점 측정에서 S1 GPU route 3.47s (CPU 때 3.52s), S2 GPU route 5.71s (5.77s)
+- ISPD score 397,595,645 — 노이즈 수준 (슬라이드 기준 397,601,526)
+- 라운드당 비용 : S2 기준 5.07ms → **0.43ms**
+
+### 결과 — `mempool_cluster_ranking` (main 대비, 같은 머신 상태)
+
+| 구간 | main | GPU batch gen | 개선 |
+| --- | --- | --- | --- |
+| S1 batch generation | 16.33s | **6.68s** | −59% |
+| S2 batch generation | 14.56s | **14.23s** | −2% |
+| S2 GPU route | 20.75s | 22.11s | +1.36s (batch 474 vs 461) |
+| 전체 runtime | 133.25s | **125.36s** | −5.9% |
+
+- ISPD score 1,781,089,663 vs main 1,780,725,674 (+0.02%, 노이즈)
+- **주의** : 이 서버는 공유라 다른 사용자와 겹치면 호스트 구간이 크게 흔들립니다. 실제로 같은 코드·같은 입력(Stage 1 결과가 자릿수까지 동일)인데 S2 preprocessing이 5.60s ↔ 19.19s로 3.4배 차이 난 실행이 있었습니다. 비교는 반드시 **연속 실행**으로
+
+### 5차 : 큰 디자인의 Stage 2
+
+`mempool_cluster_ranking`의 S2만 이득이 없었고, 로그에 원인이 그대로 나왔습니다.
+
+- `retired 101` — grid 20.6M 셀 → bitmap 하나가 2.58MB, 1GB 예산이면 ring이 374개인데 batch는 474개 필요 → 100개를 조기에 닫아 batch 수가 늘고(474 vs CPU 461) 그만큼 S2 GPU route가 +1.36s
+  - → ring 예산 1GB → **2GB** (`free/8` → `free/4`)
+- `16.8 commits per net` — wavefront 하한 1024에 배정이 라운드당 62개뿐이라 커밋의 94%가 헛일
+  - → net당 warp로 바꾼 뒤론 256 net이면 이미 8k 스레드 → 하한 **1024 → 256**
+
+### 결과 — 5차 반영 후 `mempool_cluster_ranking`
+
+| 구간 | main | GPU batch gen | 개선 |
+| --- | --- | --- | --- |
+| S1 batch generation | 16.33s | **5.50s** | −66% |
+| S2 batch generation | 14.56s | **8.90s** | −39% |
+| S2 GPU route | 20.75s | 20.78s | 동일 (batch 460 vs 461) |
+| 전체 runtime | 133.25s | **118.69s** | −10.9% |
+
+- `retired 0`, `commits per net` 2.6 / 5.5, ring 748 슬롯
+- ISPD score 1,780,669,528 vs main 1,780,725,674 (노이즈)
+- 상세 : **[2026-08-22-opt.md](2026-08-22-opt.md)**
+
+### 다음 작업
+
+- S2 라운드 수 : batch 수의 13.6배 (`mempool_group`은 3배) — 한 라운드에 batch를 여러 개 여는 방식 검토
+- 나머지 디자인(`bsg_chip`, `mempool_tile_rank`) 측정
+- `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
+- `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
+- `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
+
+---
+
 ## 다음 할 일 <sub>2026-08-20 미팅 기준</sub>
 
 - **FLUTE 가속 파이프라인**
@@ -202,9 +355,9 @@
   - center를 미리 찾아둬도 augment 시 center가 이동하는 문제
   - score 개선 : augment를 더 많이 생성하거나 다른 탐색 방법 추가
   - critical depth 자체를 줄이기 (평균 depth는 23% 감소했으나 runtime 변화 거의 없음)
-- **호스트 병목 분석** : `incr` 기준 wall의 70%가 커널이 안 도는 시간. GPU 쪽에 남은 여지는 11s뿐
-  - `./tools/nsys_profile.sh -d mempool_group -c incr --cpu` 로 어느 호스트 구간인지 확인
-- **`mempool_cluster_ranking` nsys 재측정** : 위 표를 최대 디자인으로 확장
+- **현재 main 재프로파일** : 위 호스트 내역은 4번 반영 전 코드 기준이다. 4번이 들어간 상태로 다시 재서 갱신
+- **DAG 구성 6.57s** : 4번을 빼면 남은 호스트 최대 항목. 세 스테이지에 흩어져 있음
+- **`mempool_cluster_ranking` nsys 재측정** : 3번 표를 최대 디자인으로 확장
 
 ---
 
@@ -212,5 +365,6 @@
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-23 | 3번을 nsys로 재측정 — 기존 수치 확인. 호스트가 wall의 70%임을 새로 확인 |
+| 2026-08-22 | journal의 GPU batch generation 구현 (측정 전) |
 | 2026-08-20 | 최적화 1·2·3 정리 (미팅 발표). 2번 critical path 분석, 3번 재측정 과제로 남김 |
-| 2026-08-23 | 3번을 nsys로 재측정 — 기존 수치 확인. 호스트 병목·Stage 2 DP 런치 건을 새로 발견 |
