@@ -141,9 +141,10 @@
 
 - **선배님 피드백 : 시간 측정 방식이 잘못되었음(난 맞는거같은데)**
   - 위 수치는 그 측정 방식으로 얻은 값 → 그대로 신뢰할 수 없음
-- 다음 작업 : **올바른 방식으로 재측정**
-  - 비동기 GPU 커널 구간을 host wall clock으로 나눠 재는 부분 점검 (동기화 위치 확인)
-  - CUDA event 기반 측정 / 전체 `total` 기준 비교로 재정리
+- 다음 작업 : **올바른 방식으로 재측정** → [profiling-nsys.md](profiling-nsys.md) (브랜치 `profile/nsys-vcost-presum`)
+  - 코드가 찍는 `cudaEvent` 대신 **nsys(CUPTI)** 로 커널별 실제 GPU 시간·실행 횟수를 받는다
+  - 이벤트 쌍은 읽을 때 `cudaEventSynchronize()`가 필요해 파이프라인 자체를 바꾼다 (Stage 1 배치 루프는 원래 sync가 없다)
+  - `full`(전체 재계산) / `incr`(현재) / `paper`(논문 원본) 3종을 같은 조건에서 비교
   - 재측정 후 위 표 갱신
 - 결론 자체(runtime 감소 + 품질 유지)는 유지되지만, 구간별 절감률 수치는 재측정 값으로 대체할 것
 

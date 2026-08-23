@@ -108,6 +108,7 @@ env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh
 ## 5. 참고
 
 - 환경 변수 전체 : [docs/env-vars.md](docs/env-vars.md)
+- nsys 프로파일링 (vcost/presum 검증) : [docs/profiling-nsys.md](docs/profiling-nsys.md)
 - 서버 전용 경로·명령 : [docs/my-setup.md](docs/my-setup.md)
 - 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
 - baseline upstream 커밋 : `baseline/UPSTREAM_COMMIT.txt`

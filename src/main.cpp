@@ -3,10 +3,13 @@
 #include "graph.hpp"
 #include "database.hpp"
 #include "database_cuda.hpp"
+#include "nvtx_profile.hpp"
 
 void route() {
     double stage_start = elapsed_time();
+    NVTX_PUSH("build_cuda_database", STAGE);
     build_cuda_database();
+    NVTX_POP();
     record_runtime_stage("build CUDA database", stage_start);
 
     stage_start = elapsed_time();
@@ -24,7 +27,9 @@ void route() {
     record_runtime_stage("route setup", stage_start);
 
     stage_start = elapsed_time();
+    NVTX_PUSH("Stage1/Lshape_route", STAGE);
     Lshape_route::Lshape_route(nets2route_all);
+    NVTX_POP();
     record_runtime_stage("Lshape route", stage_start);
 
     stage_start = elapsed_time();
@@ -45,7 +50,9 @@ void route() {
     graph::extract_congestionView<<<BLOCK_NUM(L * X * Y), THREAD_NUM>>> ();
     graph::extract_congestionView_xsum<<<Y, THREAD_NUM, sizeof(float) * X>>> ();
     graph::extract_congestionView_ysum<<<X, THREAD_NUM, sizeof(float) * Y>>> ();
+    NVTX_PUSH("Stage2/congestion+ripup", RIPUP);
     auto of_nets = graph::ripup(of_threshold);
+    NVTX_POP();
     graph::finish_nets(of_nets.second);
     if(LOG) printf("[%5.1f] Stage 2: congestion extraction + rip-up ends\n", elapsed_time());
     record_runtime_stage("extract congestion + ripup", stage_start);
@@ -55,7 +62,9 @@ void route() {
     record_runtime_stage("writer 2 launch", stage_start);
 
     stage_start = elapsed_time();
+    NVTX_PUSH("Stage2/DAG_detour_route", STAGE);
     Lshape_route_detour::Lshape_route_detour_wrap(of_nets.first);
+    NVTX_POP();
     record_runtime_stage("DAG/detour route", stage_start);
 
     stage_start = elapsed_time();
@@ -97,6 +106,12 @@ void runtime_breakdown() {
            100.0 * cudb::dirty_cell_limit / ((double) cudb::L * cudb::X * cudb::Y),
            cudb::incremental_presum_on ? "on" : "off",
            cudb::cpu_tree_center_enabled() ? "cpu" : (cudb::gpu_tree_center_enabled() ? "gpu" : "off"));
+
+    // Grid geometry, so a pasted breakdown can be turned into bytes-per-rebuild
+    // without reopening the benchmark: a full vcost rebuild touches L*X*Y cells
+    // and a full presum scan runs one block per track.
+    printf("grid: L=%d X=%d Y=%d cells=%lld tracks=%d\n",
+           L, X, Y, (long long) L * X * Y, all_track_cnt);
 
     // Two-level table.  Stage names starting with two spaces are sub-stages:
     // their time is already inside a parent row, so they are shown (indented,
@@ -165,5 +180,14 @@ int main(int argc, char *argv[]) {
     // survives redirection into a file or pipe.
     fflush(stdout);
     cout.flush();
+#ifdef INSTANTGR_NVTX
+    // CUPTI (and therefore nsys) flushes its activity buffers from an atexit
+    // handler, which quick_exit() skips: the tail of the trace would be lost.
+    // The extra teardown lands after the last measured stage, so it only costs
+    // profiling-run wall clock, never a measured number.
+    cudaDeviceSynchronize();
+    return 0;
+#else
     quick_exit(0);
+#endif
 }
