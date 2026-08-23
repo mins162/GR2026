@@ -1,4 +1,5 @@
 #include "graph.hpp"
+#include "nvtx_profile.hpp"
 #include <omp.h>
 #include <atomic>
 #include <unistd.h>
@@ -832,21 +833,29 @@ void Lshape_route_detour(vector<int> &nets2route) {
         int net_offset = batch_cnt_sum[i];
         int next_net_offset = batch_cnt_sum[i+1];
 
+        NVTX_PUSH("S2/batch", STAGE);
+        NVTX_PUSH("S2/ripup", RIPUP);
         record_remove_and_cost_mark(0);
         graph::commit_wire_demand<<<BLOCK_NUM(batches[i].size()), THREAD_NUM>>> (batches[i].size(), 0, ++global_timestamp, -1);
         graph::commit_via_demand<<<BLOCK_NUM(batches[i].size()), THREAD_NUM>>> (batches[i].size(), 0, global_timestamp, -1);     
         global_timestamp++;
         record_remove_and_cost_mark(1);
+        NVTX_POP();
+        NVTX_PUSH("S2/update_cost", UPDATE_COST);
         graph::update_cost();
         record_remove_and_cost_mark(2);
+        NVTX_POP();
+        NVTX_PUSH("S2/compute_presum", PRESUM);
         graph::compute_presum<<<all_track_cnt, THREAD_NUM, sizeof(double) * XY>>> ();
         graph::finish_cost_refresh();
         record_remove_and_cost_mark(3);
+        NVTX_POP();
         if(augmented_dag_gpu_profile.enabled)
             accumulate_remove_and_cost_marks();
         else
             cudaDeviceSynchronize();
         int cur_batch_depth = batch_depth_cnt_cpu[i+1] - batch_depth_cnt_cpu[i];
+        NVTX_PUSH("S2/bottom_up_DP", BOTTOM_UP);
         start_augmented_dag_gpu_timer();
         for(int d = cur_batch_depth - 1; d >= 0; d--)
         {
@@ -856,6 +865,8 @@ void Lshape_route_detour(vector<int> &nets2route) {
             Lshape_route_node_cuda<<<BLOCK_NUM(end_shift-shift+1), 512>>> (shift, end_shift);
         }
         stop_augmented_dag_gpu_timer(augmented_dag_gpu_profile.bottom_up_seconds);
+        NVTX_POP();
+        NVTX_PUSH("S2/traceback", TRACEBACK);
         start_augmented_dag_gpu_timer();
         for(int d = 0; d < cur_batch_depth; d++)
         {
@@ -865,10 +876,14 @@ void Lshape_route_detour(vector<int> &nets2route) {
             cudaDeviceSynchronize();
         }
         stop_augmented_dag_gpu_timer(augmented_dag_gpu_profile.traceback_seconds);
+        NVTX_POP();
+        NVTX_PUSH("S2/commit", COMMIT);
         start_augmented_dag_gpu_timer();
         graph::batch_wire_update(global_timestamp);
         graph::commit_via_demand<<<BLOCK_NUM(batches[i].size()), THREAD_NUM>>> (batches[i].size(), 0, global_timestamp);
         stop_augmented_dag_gpu_timer(augmented_dag_gpu_profile.commit_seconds);
+        NVTX_POP();
+        NVTX_POP();// S2/batch
     }
     stage2_gpu_route_seconds += elapsed_time() - gpu_loop_start_time;
 }

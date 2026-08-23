@@ -46,7 +46,7 @@ jobs:
             -o Dir::Etc::sourceparts="-" \
             -o APT::Get::List-Cleanup="0"
           sudo apt-get install -y --no-install-recommends \
-            cuda-nvcc-12-5 cuda-cudart-dev-12-5 cuda-cccl-12-5
+            cuda-nvcc-12-5 cuda-cudart-dev-12-5 cuda-cccl-12-5 cuda-nvtx-12-5
           echo "/usr/local/cuda-12.5/bin" >> "$GITHUB_PATH"
 
       - name: nvcc 버전 확인
@@ -62,6 +62,16 @@ jobs:
             -std=c++17 -x cu -O3 -t 0 \
             -gencode arch=compute_75,code=sm_75 \
             -gencode arch=compute_86,code=sm_86
+
+      # -DINSTANTGR_NVTX는 프로파일 전용 빌드라 위 컴파일에 포함되지 않는다.
+      # 별도로 한 번 더 컴파일해 NVTX 계측이 깨지지 않았는지 확인한다.
+      - name: 컴파일 (NVTX 프로파일 빌드)
+        if: matrix.target == 'opt'
+        working-directory: ${{ matrix.srcdir }}
+        run: |
+          nvcc main.cpp -o /tmp/InstantGR-nvtx \
+            -std=c++17 -x cu -O3 -DINSTANTGR_NVTX \
+            -gencode arch=compute_75,code=sm_75
 
   evaluator:
     name: g++ (evaluator)
