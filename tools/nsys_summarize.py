@@ -91,8 +91,10 @@ def read_log(path):
                 info["grid"] = line.strip()
             elif line.startswith("config:"):
                 info["config"] = line.strip()
-            elif line.startswith("total "):
-                m = re.match(r"total\s+([\d.]+) s", line)
+            # src/ prints "total  41.00 s  100.0 %" flush left; the paper
+            # baseline prints the same row right-aligned in a 20-wide column.
+            elif line.lstrip().startswith("total"):
+                m = re.match(r"total\s+([\d.]+)", line.strip())
                 if m:
                     info["wall"] = float(m.group(1))
             elif "Generation" in line:

@@ -120,9 +120,18 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
              -std=c++17 -x cu -O3 -arch="$ARCH"
     fi
     if printf '%s\n' "${CONFIGS[@]}" | grep -qx paper; then
+        # Separate binary: baseline/run/InstantGR stays the one run_ab uses.
+        # The -include shim only redirects quick_exit so CUPTI can flush; see
+        # tools/profiling_exit.h.
         echo "== build (paper baseline) =="
-        nvcc "$ROOT/baseline/src/main.cpp" -o "$ROOT/baseline/run/InstantGR" \
-             -std=c++17 -x cu -O3 -arch="$ARCH"
+        if ! nvcc "$ROOT/baseline/src/main.cpp" -o "$ROOT/baseline/run/InstantGR.profile" \
+                  -std=c++17 -x cu -O3 -arch="$ARCH" \
+                  -include "$ROOT/tools/profiling_exit.h" 2> "$OUT/build.paper.log"; then
+            echo "   shim build failed (see $OUT/build.paper.log); building without it."
+            echo "   The paper trace may come back empty (quick_exit skips the CUPTI flush)."
+            nvcc "$ROOT/baseline/src/main.cpp" -o "$ROOT/baseline/run/InstantGR.profile" \
+                 -std=c++17 -x cu -O3 -arch="$ARCH"
+        fi
     fi
 fi
 
@@ -150,7 +159,7 @@ run_config() {
                envs=(INSTANTGR_GPU_FLUTE=1 INSTANTGR_INCREMENTAL_VCOST=1 INSTANTGR_INCREMENTAL_PRESUM=1);;
         full)  workdir="$ROOT/run"; bin=./InstantGR.nvtx
                envs=(INSTANTGR_GPU_FLUTE=1 INSTANTGR_INCREMENTAL_VCOST=0 INSTANTGR_INCREMENTAL_PRESUM=0);;
-        paper) workdir="$ROOT/baseline/run"; bin=./InstantGR; envs=();;
+        paper) workdir="$ROOT/baseline/run"; bin=./InstantGR.profile; envs=();;
         *) echo "unknown config: $config" >&2; return 2;;
     esac
     for f in "$cap" "$net"; do
@@ -206,6 +215,15 @@ for design in "${DESIGNS[@]}"; do
         fi
         if [ "$CPU_SAMPLING" -eq 1 ]; then
             stats_csv "$rep" "$tag" osrt_sum osrtsum > /dev/null || true
+        fi
+        # A trace with no kernel rows is the signature of a process that exited
+        # without flushing CUPTI; say so here rather than letting the run go
+        # silently missing from the summary.
+        kern="$OUT/${tag}_cuda_gpu_kern_sum.csv"
+        [ -f "$kern" ] || kern="$OUT/${tag}_gpukernsum.csv"
+        if [ "$(awk 'NR > 1 && NF' "$kern" 2>/dev/null | wc -l)" -eq 0 ]; then
+            echo "   WARNING: no kernel rows for $tag -- it will be missing from the summary."
+            echo "            Trace: $rep"
         fi
     done
 done
