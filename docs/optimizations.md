@@ -134,7 +134,7 @@
 | `mempool_group` | 66.19s | 61.67s (−6.7%) | 40.93s (−39.3%) | 38.20s (−42.3%) |
 | `mempool_cluster_ranking` | 233.34s | 220.09s (−5.7%) | 162.17s (−30.5%) | 140.81s (−39.7%, 1.66×) |
 
-- **runtime은 줄었고, evaluate(ISPD score)도 정상적으로 나옴**
+- **runtime 감소, evaluate(ISPD score) 정상**
   - `mempool_group` : 397,600,453 → 397,601,920 (노이즈 수준)
   - `mempool_cluster_ranking` : 1,780,762,387 → 1,780,724,749 (+0.0002%, 노이즈)
 
@@ -155,33 +155,35 @@
 | `full` | 56.24s | 29.51s (52.5%) | 26.73s (47.5%) | 10.88s | 8.93s | 19.81s = wall의 35.2% (GPU의 67.1%) |
 | `incr` | 36.77s | 10.99s (29.9%) | 25.78s (70.1%) | 0.17s | 0.85s | 1.02s = wall의 2.8% (GPU의 9.3%) |
 
-- **논문 원본에서 vcost+presum은 wall의 33%, GPU 작업의 69%다.**
-  단일 최대 커널이 `update_vcost_ispd24` (10.98s), 그다음이 `update_wcost_cuda_ispd24` (6.02s),
-  `compute_presum` (4.20s). 나머지 GPU 커널을 다 합쳐야 9.4s.
-  → "원래 오래 안 걸린다"는 전제는 이 디자인·이 GPU에서 성립하지 않는다.
-- **`full` → `incr` : wall 56.24 → 36.77s (−34.6%)**, GPU −18.52s, vcost+presum −18.79s.
-  wall 감소와 GPU 감소가 거의 1:1 → 기존 −30~40%는 계측 아티팩트가 아니었다.
-- `paper` → `incr` 는 −42.8%지만 여기엔 GPU-FLUTE 몫이 섞여 있다.
-- `paper`와 `full`의 vcost+presum 총량이 21.19 vs 19.81s로 비슷하다. wcost-presum fusion은 일을
-  옮겼을 뿐 (`paper` = wcost 6.02 + vcost 10.98 / presum 4.20, `full` = vcost 10.88 / presum 8.93 —
-  presum이 wcost를 인라인으로 재계산). `full`이 `paper`의 공정한 대역이고, fusion 자체는
-  non-incremental 조건에서 ~1.4s 이득이며 track 단위 skip을 가능하게 한다.
-- 기존 `cudaEvent` 측정은 **Stage 1을 아예 안 보고 있었다**. `update_cost` 런치가
-  **1467 = Stage 1의 601 + Stage 2의 866** 으로 갈린다 — Stage 1 몫 41%가 기존 표에 없었다.
-  방식이 틀린 게 아니라 범위가 좁았고, 방향은 과소 보고였다.
-- GPU-FLUTE의 이득은 **커널 표에 안 보인다**. GPU FLUTE 커널 합계는 0.08s뿐이고, 효과는
-  `paper` 33.68s → `full` 26.73s 즉 **호스트 idle 6.95s 감소**로 나타난다.
-  기존 RSMT 표의 13.7s → 7.27s (−6.4s)와 일치한다.
+- **논문 원본에서 vcost+presum은 wall의 33%, GPU 작업의 69%**
+  - 단일 최대 커널 `update_vcost_ispd24` 10.98s, 다음 `update_wcost_cuda_ispd24` 6.02s, `compute_presum` 4.20s
+  - 나머지 GPU 커널 전부 합쳐야 9.4s
+  - → "원래 오래 안 걸린다"는 전제는 이 디자인·이 GPU에서 미성립
+- **`full` → `incr` : wall 56.24 → 36.77s (−34.6%)**
+  - GPU −18.52s, vcost+presum −18.79s → wall 감소와 GPU 감소가 거의 1:1
+  - → 기존 −30~40%는 계측 아티팩트 아님
+- `paper` → `incr` 는 −42.8%지만 GPU-FLUTE 몫이 혼입
+- `paper`와 `full`의 vcost+presum 총량 유사 (21.19 vs 19.81s)
+  - wcost-presum fusion은 일을 옮겼을 뿐 (`paper` = wcost 6.02 + vcost 10.98 / presum 4.20, `full` = vcost 10.88 / presum 8.93 — presum이 wcost를 인라인 재계산)
+  - `full`이 `paper`의 공정한 대역
+  - fusion 자체는 non-incremental 조건에서 ~1.4s 이득, track 단위 skip을 가능하게 함
+- 기존 `cudaEvent` 측정은 **Stage 1 미포함**
+  - `update_cost` 런치 **1467 = Stage 1 601 + Stage 2 866**
+  - Stage 1 몫 41%가 기존 표에 없었음 → 방식이 틀린 게 아니라 범위가 좁았고, 방향은 과소 보고
+- GPU-FLUTE의 이득은 **커널 표에 안 보임**
+  - GPU FLUTE 커널 합계 0.08s
+  - 효과는 `paper` 33.68s → `full` 26.73s, 즉 **호스트 idle 6.95s 감소**로 발현
+  - 기존 RSMT 표의 13.7s → 7.27s (−6.4s)와 일치
 
-### 남은 문제 — 이제 병목은 호스트다
+### 남은 문제 — 병목은 호스트
 
-- `incr` 기준 wall 36.77s 중 **25.78s(70.1%)가 GPU 커널이 안 도는 시간**이다.
-- 이 값은 최적화와 **무관하게 고정**이다 : `full` 26.73s → `incr` 25.78s.
-- 즉 GPU 커널을 앞으로 아무리 더 줄여도 상한이 11s다.
-- `cudaDeviceSynchronize` 7.43s / 19,599회, 커널 런치 51,681회, `cudaMemcpy` 2.19s / 10,588회.
+- `incr` 기준 wall 36.77s 중 **25.78s(70.1%)가 GPU 커널이 안 도는 시간**
+- 이 값은 최적화와 **무관하게 고정** : `full` 26.73s → `incr` 25.78s
+- → GPU 커널을 아무리 줄여도 상한이 11s
+- `cudaDeviceSynchronize` 7.43s / 19,599회, 커널 런치 51,681회, `cudaMemcpy` 2.19s / 10,588회
 
-호스트 27.2s의 내역 (`mempool_group`, `incr`, wall 37.04s 런).
-**이 프로파일은 4번(GPU batch generation) 반영 전 코드**다:
+호스트 27.2s의 내역 (`mempool_group`, `incr`, wall 37.04s 런)
+— **4번(GPU batch generation) 반영 전 코드** :
 
 | 구간 | 시간 | wall % | 현재 상태 |
 | --- | --- | --- | --- |
@@ -194,23 +196,20 @@
 | **호스트 합** | **27.19s** | **73.4%** | |
 | GPU route batches (S1 3.23 + S2 5.82) | 9.05s | 24.4% | |
 
-- 이 프로파일에서 최대 호스트 항목이던 batch generation은 **4번이 이미 GPU로 옮겼다**
-  (S1 3.60 → 0.80s, S2 3.81 → 1.18s). 프로파일이 가리킨 1순위와 실제로 한 작업이 일치한다.
-- 그걸 빼면 남은 호스트 1순위는 **DAG 구성 6.57s**, 그다음 CPU FLUTE 4.94s, input 파싱 4.79s.
-- DAG 구성은 세 스테이지로 흩어져 있어 한 번에 걷어내기 어렵다.
-- CPU FLUTE 4.94s는 이미 overlap 중이라, 추가 이득은 GPU FLUTE 커버리지를 넓혀야 나온다
-  (현재 degree ≥ 10만 GPU).
-- **다음 측정 : 4번이 들어간 현재 main에서 다시 프로파일**해 위 표를 갱신할 것.
+- 최대 호스트 항목이던 batch generation은 **4번이 GPU로 이전 완료** (S1 3.60 → 0.80s, S2 3.81 → 1.18s)
+  - 프로파일이 가리킨 1순위와 실제 작업이 일치
+- 이를 제외한 호스트 1순위 : **DAG 구성 6.57s**, 다음 CPU FLUTE 4.94s, input 파싱 4.79s
+- DAG 구성은 세 스테이지에 분산되어 일괄 제거 곤란
+- CPU FLUTE 4.94s는 이미 overlap 중 → 추가 이득은 GPU FLUTE 커버리지 확대 필요 (현재 degree ≥ 10만 GPU)
+- **갱신 완료** : 4번 반영 후 재측정 결과는 [2026-08-23-best-result.md](2026-08-23-best-result.md)
 
 ### 트레이스 검증은 필수
 
-`paper` config를 처음 돌렸을 때 `compute_presum` 런치가 1305로 나왔다 — 실제 배치 수 1466보다
-161 적다. `quick_exit()`이 CUPTI flush를 건너뛰어 트레이스 뒷부분이 **조용히 잘린** 것이고,
-`tools/profiling_exit.h`로 고쳤다. 그 잘린 트레이스에서는 Stage 2 DP 런치가 8,328로 보여
-"src가 논문보다 DP를 2배 돌린다"는 잘못된 결론이 나왔었다. 온전한 트레이스에서는
-**`paper` 18,573 vs `incr` 18,729, DP 시간 4.69 vs 4.65s로 사실상 동일**하다.
-
-→ 어떤 수치든 쓰기 전에 **런치 수를 배치 수와 대조**할 것.
+- `paper` config 첫 실행 시 `compute_presum` 런치 1305 — 실제 배치 수 1466보다 161 적음
+- 원인 : `quick_exit()`이 CUPTI flush를 건너뛰어 트레이스 뒷부분이 **조용히 절단** → `tools/profiling_exit.h`로 수정
+- 잘린 트레이스에서는 Stage 2 DP 런치가 8,328로 보여 "src가 논문보다 DP를 2배 돌린다"는 오결론 발생
+- 온전한 트레이스 : **`paper` 18,573 vs `incr` 18,729, DP 시간 4.69 vs 4.65s로 사실상 동일**
+- → 어떤 수치든 쓰기 전에 **런치 수를 배치 수와 대조**할 것
 
 ---
 
@@ -222,14 +221,14 @@
 
 ### 1차 시도 : 논문 스케줄링 그대로 → **실패**
 
-batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 commit → check → rule out.
+- batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 commit → check → rule out
 
 | 구간 (`mempool_group`) | CPU first-fit | 논문 방식 |
 | --- | --- | --- |
 | S1 batch generation | 3.15s | **5.51s** |
 | S2 batch generation | 3.50s | **12.93s** |
 
-(구조 개선 실측 : 2차 S1 3.44 / S2 13.41s, 3차 S1 3.62 / S2 13.68s — 아래 3·4차 참고)
+- 구조 개선 실측 : 2차 S1 3.44 / S2 13.41s, 3차 S1 3.62 / S2 13.68s (아래 3·4차 참고)
 
 - 원인 : net 하나가 "자기가 최종적으로 들어갈 batch 번호"만큼 full commit을 반복
   - S2는 net 197k에 batch 869개 → net당 평균 **~430회** commit, 거기에 batch당 commit-check 라운드 5.1회가 곱해짐
@@ -237,7 +236,8 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 
 ### 2차 : 실패를 싸게 만든 구조 (현재 구현)
 
-논문의 **commit-check 우선순위 중재**(`atomicMin`으로 높은 우선순위가 셀 선점 → 자기 point를 전부 소유한 net만 배정)는 그대로 두고, batch를 하나씩 닫는 스케줄링만 CPU first-fit 구조로 되돌렸습니다.
+- 논문의 **commit-check 우선순위 중재**(`atomicMin`으로 높은 우선순위가 셀 선점 → 자기 point를 전부 소유한 net만 배정)는 유지
+- batch를 하나씩 닫는 스케줄링만 CPU first-fit 구조로 회귀
 
 - **window** : batch 여러 개를 동시에 열어두고 bitmap을 유지 → 새 batch뿐 아니라 예전 batch에도 들어갈 수 있음
 - **wavefront** : 우선순위 앞쪽 일부만 in-flight. batch 크기에 맞춰 매 라운드 자동 조절 (배정 수의 2~8배)
@@ -245,11 +245,13 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 - **commit / check** : 고른 batch 하나에만 라운드당 1회 commit
 - 열린 batch에 다 못 들어가면 새 batch를 열고, ring이 꽉 차면 가장 오래된 batch를 닫음
 
-효과 (호스트 시뮬레이션, net 60k): net당 commit이 **6~8회** — 논문 방식의 수백 회 대비 두 자릿수 배 감소.
+- 효과 (호스트 시뮬레이션, net 60k) : net당 commit **6~8회** — 논문 방식의 수백 회 대비 두 자릿수 배 감소
 
 ### 3차 : 라운드 오버헤드 제거
 
-2차 실측(`mempool_group`)에서 S1 5.51 → **3.44s**(CPU 3.15), S2는 12.93 → **13.41s**로 거의 그대로였습니다. 로그를 보면 net당 commit은 이미 2.8 / 5.1회로 싼데 라운드가 1847 / 2761회 — **라운드당 4.9ms**가 나왔습니다. 커널 자체가 아니라 라운드 고정비용이 전부였습니다.
+- 2차 실측(`mempool_group`) : S1 5.51 → **3.44s**(CPU 3.15), S2 12.93 → **13.41s**로 거의 불변
+- net당 commit은 이미 2.8 / 5.1회로 저렴한데 라운드가 1847 / 2761회 → **라운드당 4.9ms**
+- 커널 자체가 아니라 라운드 고정비용이 전부
 
 - 원인 : `thrust::copy_if`가 호출마다 임시 버퍼를 `cudaMalloc`/`cudaFree` — `cudaFree`는 디바이스 전체를 동기화하고, 수 GB를 잡고 있는 상태에선 ms 단위
 - 조치
@@ -277,7 +279,8 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 
 ### 4차 : net당 warp
 
-3차 실측에서도 S2는 13.68s로 그대로였습니다 (S1 3.62s). 라운드당 **5.07ms** — thrust 제거로는 안 움직였으니 원인은 커널 안이었습니다.
+- 3차 실측에서도 S2 13.68s로 불변 (S1 3.62s), 라운드당 **5.07ms**
+- thrust 제거로 안 움직임 → 원인은 커널 내부
 
 - 원인 : **커널이 net당 스레드 1개**. wavefront 1024면 스레드가 32워프뿐이라 (TITAN RTX는 SM만 72개) 지연이 하나도 안 숨겨짐
   - pick : net 하나가 열린 batch 871개를 **순차 의존 체인**으로 훑음 → 스레드당 수천 번의 dependent load
@@ -312,11 +315,14 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 | 전체 runtime | 133.25s | **125.36s** | −5.9% |
 
 - ISPD score 1,781,089,663 vs main 1,780,725,674 (+0.02%, 노이즈)
-- **주의** : 이 서버는 공유라 다른 사용자와 겹치면 호스트 구간이 크게 흔들립니다. 실제로 같은 코드·같은 입력(Stage 1 결과가 자릿수까지 동일)인데 S2 preprocessing이 5.60s ↔ 19.19s로 3.4배 차이 난 실행이 있었습니다. 비교는 반드시 **연속 실행**으로
+- **주의**
+  - 공유 서버 → 다른 사용자와 겹치면 호스트 구간이 크게 흔들림
+  - 실측 사례 : 같은 코드·같은 입력(Stage 1 결과 자릿수까지 동일)인데 S2 preprocessing이 5.60s ↔ 19.19s로 3.4배 차이
+  - 비교는 반드시 **연속 실행**으로
 
 ### 5차 : 큰 디자인의 Stage 2
 
-`mempool_cluster_ranking`의 S2만 이득이 없었고, 로그에 원인이 그대로 나왔습니다.
+- `mempool_cluster_ranking`의 S2만 이득 없음, 로그에 원인 노출
 
 - `retired 101` — grid 20.6M 셀 → bitmap 하나가 2.58MB, 1GB 예산이면 ring이 374개인데 batch는 474개 필요 → 100개를 조기에 닫아 batch 수가 늘고(474 vs CPU 461) 그만큼 S2 GPU route가 +1.36s
   - → ring 예산 1GB → **2GB** (`free/8` → `free/4`)
