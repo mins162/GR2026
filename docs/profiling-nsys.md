@@ -143,6 +143,7 @@ nsys-ui nsys_results_0823_141500/mempool_tile_rank.incr.nsys-rep
 
 ## 5. 계측 구조
 
+- nsys 바이너리는 스크립트가 고른다. 강제하려면 `NSYS` 환경 변수에 절대 경로를 준다.
 - `src/nvtx_profile.hpp` — `-DINSTANTGR_NVTX` 없이는 모든 매크로가 사라진다. 평소 빌드는 완전히 그대로다.
 - 구간 이름 : `S1/update_cost`, `S1/compute_presum`, `S1/DP`, `S1/commit`, `S1/batch`, `S2/ripup`, `S2/update_cost`, `S2/compute_presum`, `S2/bottom_up_DP`, `S2/traceback`, `S2/commit`, `S2/batch`
 - 프로파일 빌드는 종료 시 `quick_exit()` 대신 정상 종료한다. CUPTI가 atexit에서 버퍼를 flush하는데 `quick_exit()`은 그걸 건너뛰어 트레이스 꼬리가 잘린다. 추가 시간은 마지막 측정 구간 뒤에 생기므로 숫자에는 영향이 없다.
@@ -154,7 +155,8 @@ nsys-ui nsys_results_0823_141500/mempool_tile_rank.incr.nsys-rep
 
 | 증상 | 원인 / 대응 |
 | --- | --- |
-| `nsys not on PATH` | `/usr/local/cuda/bin/nsys` 또는 `/opt/nvidia/nsight-systems/*/target-linux-x64/nsys` 를 PATH에 추가 |
+| `Error: Nsight Systems X hasn't been installed with CUDA Toolkit Y` | `$CUDA/bin/nsys`가 버전 안 맞으면 거부하는 래퍼다. 스크립트가 `/opt/nvidia/nsight-systems/*/target-linux-x64/nsys` 등을 `--version`으로 확인해가며 자동으로 고른다 |
+| `no working nsys found` | 설치된 사본이 없다. 경로를 알면 `env NSYS=/full/path/to/nsys ./tools/nsys_profile.sh ...` |
 | NVTX 빌드 실패 | 스크립트가 자동으로 NVTX 없이 재빌드한다. 커널별 시간은 그대로 나오고 구간 묶음만 빠진다. 헤더는 `cuda-nvtx` 패키지(`<nvtx3/nvToolsExt.h>`) |
 | `--gpu-metrics` 권한 오류 | 프로파일링이 admin 전용으로 잠겨 있음. `NVreg_RestrictProfilingToAdminUsers=0` 필요 → 관리자 문의. 이 옵션 없이도 결론은 난다 |
 | 트레이스가 너무 큼 / 느림 | 더 작은 디자인으로. `--cpu`, `--gpu-metrics`를 빼면 오버헤드가 크게 준다 |

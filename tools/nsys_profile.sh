@@ -60,16 +60,48 @@ done
 [ ${#DESIGNS[@]} -eq 0 ] && DESIGNS=(mempool_tile_rank)
 [ ${#CONFIGS[@]} -eq 0 ] && CONFIGS=(incr full paper)
 
-command -v nsys >/dev/null || {
-    echo "nsys not on PATH.  It ships with the CUDA toolkit:" >&2
-    echo "  ls /usr/local/cuda*/bin/nsys   /opt/nvidia/nsight-systems/*/target-linux-x64/nsys" >&2
+# $CUDA/bin/nsys is often a wrapper that refuses to run when its version does
+# not match the toolkit ("Error: Nsight Systems X hasn't been installed with
+# CUDA Toolkit Y").  The real binary sits under /opt/nvidia/nsight-systems.
+# Probe candidates newest-first and keep the first one that answers --version.
+resolve_nsys() {
+    local c
+    local -a candidates=()
+    if [ -n "${NSYS:-}" ]; then candidates+=("$NSYS"); fi
+    candidates+=(nsys)
+    while IFS= read -r c; do
+        candidates+=("$c")
+    done < <(ls -d /opt/nvidia/nsight-systems/*/target-linux-x64/nsys \
+                   /opt/nvidia/nsight-systems-cli/*/target-linux-x64/nsys \
+                   /usr/local/cuda*/nsight-systems-*/target-linux-x64/nsys \
+                   2>/dev/null | sort -Vr)
+    for c in "${candidates[@]}"; do
+        command -v "$c" > /dev/null 2>&1 || continue
+        "$c" --version > /dev/null 2>&1 || continue
+        command -v "$c"
+        return 0
+    done
+    return 1
+}
+
+NSYS_BIN="$(resolve_nsys)" || {
+    echo "no working nsys found." >&2
+    echo "  what is on PATH:" >&2
+    command -v nsys >&2 || echo "    (nothing)" >&2
+    command -v nsys > /dev/null 2>&1 && nsys --version >&2 || true
+    echo "  installed copies:" >&2
+    ls -d /opt/nvidia/nsight-systems*/*/target-linux-x64/nsys \
+          /usr/local/cuda*/nsight-systems-*/target-linux-x64/nsys 2>/dev/null >&2 \
+        || echo "    (none found; Nsight Systems is not installed)" >&2
+    echo "  point at one explicitly with:  env NSYS=/full/path/to/nsys $0 ..." >&2
     exit 1
 }
+echo "nsys: $NSYS_BIN"
 
 OUT="$ROOT/nsys_results_$(date +%m%d_%H%M%S)"
 mkdir -p "$OUT"
 echo "output: $OUT"
-nsys --version | tee "$OUT/nsys-version.txt"
+"$NSYS_BIN" --version | tee "$OUT/nsys-version.txt"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv > "$OUT/gpu.csv" 2>/dev/null || true
 { lscpu; echo; nproc; } > "$OUT/cpu.txt" 2>/dev/null || true
 
@@ -127,7 +159,7 @@ run_config() {
 
     echo "== profile $tag =="
     ( cd "$workdir" && \
-      env ${envs[@]+"${envs[@]}"} nsys profile \
+      env ${envs[@]+"${envs[@]}"} "$NSYS_BIN" profile \
           --trace="$TRACE" \
           "${SAMPLE_ARGS[@]}" \
           ${METRIC_ARGS[@]+"${METRIC_ARGS[@]}"} \
@@ -149,7 +181,7 @@ run_config() {
 stats_csv() {
     local rep="$1" tag="$2"; shift 2
     for name in "$@"; do
-        if nsys stats --report "$name" --format csv \
+        if "$NSYS_BIN" stats --report "$name" --format csv \
                       --output "$OUT/$tag" "$rep" > /dev/null 2>&1; then
             echo "$name"
             return 0
@@ -182,4 +214,4 @@ echo
 python3 "$ROOT/tools/nsys_summarize.py" "$OUT" | tee "$OUT/SUMMARY.txt"
 echo
 echo "raw traces + csv: $OUT"
-echo "open a timeline with:  nsys-ui $OUT/<design>.<config>.nsys-rep"
+echo "open a timeline with:  nsys-ui $OUT/<design>-<config>.nsys-rep"

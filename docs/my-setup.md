@@ -86,18 +86,18 @@ ls -la /home/shkim/6_Internship/mskim/InstantGR-2026/tools /home/shkim/6_Interns
 
 ### 1. nsys 확인
 
+스크립트가 알아서 찾으므로 보통은 건너뛰어도 된다. `$CUDA/bin/nsys`는 버전이 안 맞으면 거부하는 래퍼(`Error: Nsight Systems 2024.2.3 hasn't been installed with CUDA Toolkit 12.5`)라, 실제로 동작하는 바이너리를 `--version`으로 확인해가며 고른다.
+
+설치된 것들을 직접 보려면:
+
 ```bash
-which nsys
+ls -d /opt/nvidia/nsight-systems/*/target-linux-x64/nsys /opt/nvidia/nsight-systems-cli/*/target-linux-x64/nsys /usr/local/cuda*/nsight-systems-*/target-linux-x64/nsys
 ```
 
-없으면 CUDA 툴킷 안에 있다:
+못 찾으면 경로를 직접 준다:
 
 ```bash
-ls /usr/local/cuda/bin/nsys /opt/nvidia/nsight-systems/*/target-linux-x64/nsys
-```
-
-```bash
-setenv PATH /usr/local/cuda/bin:$PATH
+setenv NSYS /opt/nvidia/nsight-systems/2024.2.3/target-linux-x64/nsys
 ```
 
 ### 2. 빈 GPU 잡기
