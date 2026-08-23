@@ -130,6 +130,9 @@ def report(out_dir, tag):
     print("  GPU busy (sum of kernel time)    : %8.2f s%s" % (
         gpu_ns / 1e9,
         "   (%.1f%% of wall)" % (100 * gpu_ns / 1e9 / wall) if wall else ""))
+    if wall:
+        print("  no kernel running                : %8.2f s   (%.1f%% of wall)" % (
+            wall - gpu_ns / 1e9, 100 * (1 - gpu_ns / 1e9 / wall)))
     if log["batches"]:
         print("  batches per stage                : %s" %
               ", ".join(str(b) for b in log["batches"]))
@@ -152,6 +155,21 @@ def report(out_dir, tag):
         # nsys prints the full signature; the argument list adds no information
         # here and pushes the namespace off the right edge.
         print("  %-46s %s s %12d" % (name.split("(")[0][:46], fmt_s(total), num))
+
+    # Host side.  GPU busy well under wall clock means the answer is here, not
+    # in the kernel table: a synchronize that dominates cudaLaunchKernel is the
+    # host waiting on the GPU, while launch time dominating means the opposite.
+    api = (glob.glob(os.path.join(out_dir, tag + "_cuda_api_sum.csv")) or
+           glob.glob(os.path.join(out_dir, tag + "_cudaapisum.csv")))
+    if api:
+        arows = read_stats(api[0])
+        if arows:
+            print()
+            print("  host-side CUDA API time (blocking calls include GPU wait)")
+            for name, total, num in sorted(arows, key=lambda r: -r[1])[:8]:
+                print("  %-46s %s s %12d%s" % (
+                    name.split("(")[0][:46], fmt_s(total), num,
+                    "  (%.1f%% of wall)" % (100 * total / 1e9 / wall) if wall else ""))
 
     nvtx = (glob.glob(os.path.join(out_dir, tag + "_nvtx_gpu_proj_sum.csv")) or
             glob.glob(os.path.join(out_dir, tag + "_nvtx_sum.csv")))
