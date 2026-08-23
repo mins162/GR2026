@@ -157,6 +157,7 @@ nsys-ui nsys_results_0823_141500/mempool_tile_rank.incr.nsys-rep
 | --- | --- |
 | `Error: Nsight Systems X hasn't been installed with CUDA Toolkit Y` | `$CUDA/bin/nsys`가 버전 안 맞으면 거부하는 래퍼다. 스크립트가 `/opt/nvidia/nsight-systems/*/target-linux-x64/nsys` 등을 `--version`으로 확인해가며 자동으로 고른다 |
 | `no working nsys found` | 설치된 사본이 없다. 경로를 알면 `env NSYS=/full/path/to/nsys ./tools/nsys_profile.sh ...` |
+| `WARNING: no kernel rows for ...` | 트레이스에 커널이 하나도 없다. 짧은 런(수 초)의 `paper` config에서 관측됨 — `quick_exit()`이 CUPTI flush를 건너뛰는 게 원인 후보이고, `tools/profiling_exit.h`가 그걸 우회한다. 다만 66초짜리 `paper` 런은 이 shim 없이도 정상이었으므로 확진은 아니다 |
 | NVTX 빌드 실패 | 스크립트가 자동으로 NVTX 없이 재빌드한다. 커널별 시간은 그대로 나오고 구간 묶음만 빠진다. 헤더는 `cuda-nvtx` 패키지(`<nvtx3/nvToolsExt.h>`) |
 | `--gpu-metrics` 권한 오류 | 프로파일링이 admin 전용으로 잠겨 있음. `NVreg_RestrictProfilingToAdminUsers=0` 필요 → 관리자 문의. 이 옵션 없이도 결론은 난다 |
 | 트레이스가 너무 큼 / 느림 | 더 작은 디자인으로. `--cpu`, `--gpu-metrics`를 빼면 오버헤드가 크게 준다 |
