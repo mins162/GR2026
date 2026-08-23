@@ -1,6 +1,6 @@
 # InstantGR 최적화 정리
 
-- 최종 업데이트 : **2026-08-22**
+- 최종 업데이트 : **2026-08-23**
 - 기준 자료 : 2026-08-20 미팅 발표 (`0820 논문.pptx`, 슬라이드 21~33)
 - 대상 : ISPD 2024 global routing (InstantGR)
 - 벤치마크 : `mempool_group` (3.2M net), `mempool_cluster_ranking` (10.6M net)
@@ -9,7 +9,7 @@
 | --- | --- | --- | --- |
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
 | 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
-| 3 | vcost / presum 계산 절감 | runtime·품질 양호, 시간 측정 방식 재검토 후 재측정 예정 | 2026-08-20 |
+| 3 | vcost / presum 계산 절감 | **nsys 재측정 완료 — 기존 수치 확인됨** | 2026-08-23 |
 | 4 | GPU batch generation | `mempool_group` 전체 −11.9%, `mempool_cluster_ranking` −5.9% | 2026-08-22 |
 
 ---
@@ -138,15 +138,79 @@
   - `mempool_group` : 397,600,453 → 397,601,920 (노이즈 수준)
   - `mempool_cluster_ranking` : 1,780,762,387 → 1,780,724,749 (+0.0002%, 노이즈)
 
-### 문제 및 다음 작업
+### 재측정 — nsys (2026-08-23) <sub>결론 : 기존 수치가 맞았음</sub>
 
-- **선배님 피드백 : 시간 측정 방식이 잘못되었음(난 맞는거같은데)**
-  - 위 수치는 그 측정 방식으로 얻은 값 → 그대로 신뢰할 수 없음
-- 다음 작업 : **올바른 방식으로 재측정**
-  - 비동기 GPU 커널 구간을 host wall clock으로 나눠 재는 부분 점검 (동기화 위치 확인)
-  - CUDA event 기반 측정 / 전체 `total` 기준 비교로 재정리
-  - 재측정 후 위 표 갱신
-- 결론 자체(runtime 감소 + 품질 유지)는 유지되지만, 구간별 절감률 수치는 재측정 값으로 대체할 것
+- 방법 : [profiling-nsys.md](profiling-nsys.md), 브랜치 `profile/nsys-vcost-presum`
+- 코드가 찍는 `cudaEvent` 대신 **nsys(CUPTI)** 가 드라이버에서 직접 받은 커널별 시간
+- `mempool_group`, TITAN RTX (sm_75), `cells=38,763,846` · `tracks=18,578`, 배치 = Stage 1 601 + Stage 2 866
+- config
+  - `paper` : `baseline/` 논문 원본 (CPU FLUTE)
+  - `full` : `src/` + incremental 둘 다 off (전체 재계산)
+  - `incr` : `src/` + incremental 둘 다 on (현재)
+  - `full` / `incr`은 GPU-FLUTE를 양쪽 다 켜서 vcost·presum만 변수로 남김
+
+| config | wall | GPU busy | 커널 안 도는 시간 | vcost | presum | vcost+presum |
+| --- | --- | --- | --- | --- | --- | --- |
+| `paper` | 64.27s | 30.59s (47.6%) | 33.68s (52.4%) | 16.99s | 4.20s | **21.19s = wall의 33.0%** (GPU의 69.3%) |
+| `full` | 56.24s | 29.51s (52.5%) | 26.73s (47.5%) | 10.88s | 8.93s | 19.81s = wall의 35.2% (GPU의 67.1%) |
+| `incr` | 36.77s | 10.99s (29.9%) | 25.78s (70.1%) | 0.17s | 0.85s | 1.02s = wall의 2.8% (GPU의 9.3%) |
+
+- **논문 원본에서 vcost+presum은 wall의 33%, GPU 작업의 69%다.**
+  단일 최대 커널이 `update_vcost_ispd24` (10.98s), 그다음이 `update_wcost_cuda_ispd24` (6.02s),
+  `compute_presum` (4.20s). 나머지 GPU 커널을 다 합쳐야 9.4s.
+  → "원래 오래 안 걸린다"는 전제는 이 디자인·이 GPU에서 성립하지 않는다.
+- **`full` → `incr` : wall 56.24 → 36.77s (−34.6%)**, GPU −18.52s, vcost+presum −18.79s.
+  wall 감소와 GPU 감소가 거의 1:1 → 기존 −30~40%는 계측 아티팩트가 아니었다.
+- `paper` → `incr` 는 −42.8%지만 여기엔 GPU-FLUTE 몫이 섞여 있다.
+- `paper`와 `full`의 vcost+presum 총량이 21.19 vs 19.81s로 비슷하다. wcost-presum fusion은 일을
+  옮겼을 뿐 (`paper` = wcost 6.02 + vcost 10.98 / presum 4.20, `full` = vcost 10.88 / presum 8.93 —
+  presum이 wcost를 인라인으로 재계산). `full`이 `paper`의 공정한 대역이고, fusion 자체는
+  non-incremental 조건에서 ~1.4s 이득이며 track 단위 skip을 가능하게 한다.
+- 기존 `cudaEvent` 측정은 **Stage 1을 아예 안 보고 있었다**. `update_cost` 런치가
+  **1467 = Stage 1의 601 + Stage 2의 866** 으로 갈린다 — Stage 1 몫 41%가 기존 표에 없었다.
+  방식이 틀린 게 아니라 범위가 좁았고, 방향은 과소 보고였다.
+- GPU-FLUTE의 이득은 **커널 표에 안 보인다**. GPU FLUTE 커널 합계는 0.08s뿐이고, 효과는
+  `paper` 33.68s → `full` 26.73s 즉 **호스트 idle 6.95s 감소**로 나타난다.
+  기존 RSMT 표의 13.7s → 7.27s (−6.4s)와 일치한다.
+
+### 남은 문제 — 이제 병목은 호스트다
+
+- `incr` 기준 wall 36.77s 중 **25.78s(70.1%)가 GPU 커널이 안 도는 시간**이다.
+- 이 값은 최적화와 **무관하게 고정**이다 : `full` 26.73s → `incr` 25.78s.
+- 즉 GPU 커널을 앞으로 아무리 더 줄여도 상한이 11s다.
+- `cudaDeviceSynchronize` 7.43s / 19,599회, 커널 런치 51,681회, `cudaMemcpy` 2.19s / 10,588회.
+
+호스트 27.2s의 내역 (`mempool_group`, `incr`, wall 37.04s 런).
+**이 프로파일은 4번(GPU batch generation) 반영 전 코드**다:
+
+| 구간 | 시간 | wall % | 현재 상태 |
+| --- | --- | --- | --- |
+| batch generation (S1 3.33 + S2 3.55) | 6.88s | 18.6% | **4번에서 해결됨** → 약 2.0s |
+| DAG 구성 (S1 DFS 1.75 + S2 preprocessing 2.09 + S2 host prep/upload 2.73) | 6.57s | 17.7% | 남음 |
+| CPU FLUTE, degree < 10 (overlapped) | 4.94s | 13.3% | 남음 |
+| input 파싱 | 4.79s | 12.9% | 남음 |
+| 출력 (finish nets + close output) | 2.13s | 5.8% | 남음 |
+| build CUDA database | 1.88s | 5.1% | 남음 |
+| **호스트 합** | **27.19s** | **73.4%** | |
+| GPU route batches (S1 3.23 + S2 5.82) | 9.05s | 24.4% | |
+
+- 이 프로파일에서 최대 호스트 항목이던 batch generation은 **4번이 이미 GPU로 옮겼다**
+  (S1 3.60 → 0.80s, S2 3.81 → 1.18s). 프로파일이 가리킨 1순위와 실제로 한 작업이 일치한다.
+- 그걸 빼면 남은 호스트 1순위는 **DAG 구성 6.57s**, 그다음 CPU FLUTE 4.94s, input 파싱 4.79s.
+- DAG 구성은 세 스테이지로 흩어져 있어 한 번에 걷어내기 어렵다.
+- CPU FLUTE 4.94s는 이미 overlap 중이라, 추가 이득은 GPU FLUTE 커버리지를 넓혀야 나온다
+  (현재 degree ≥ 10만 GPU).
+- **다음 측정 : 4번이 들어간 현재 main에서 다시 프로파일**해 위 표를 갱신할 것.
+
+### 트레이스 검증은 필수
+
+`paper` config를 처음 돌렸을 때 `compute_presum` 런치가 1305로 나왔다 — 실제 배치 수 1466보다
+161 적다. `quick_exit()`이 CUPTI flush를 건너뛰어 트레이스 뒷부분이 **조용히 잘린** 것이고,
+`tools/profiling_exit.h`로 고쳤다. 그 잘린 트레이스에서는 Stage 2 DP 런치가 8,328로 보여
+"src가 논문보다 DP를 2배 돌린다"는 잘못된 결론이 나왔었다. 온전한 트레이스에서는
+**`paper` 18,573 vs `incr` 18,729, DP 시간 4.69 vs 4.65s로 사실상 동일**하다.
+
+→ 어떤 수치든 쓰기 전에 **런치 수를 배치 수와 대조**할 것.
 
 ---
 
@@ -291,7 +355,9 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
   - center를 미리 찾아둬도 augment 시 center가 이동하는 문제
   - score 개선 : augment를 더 많이 생성하거나 다른 탐색 방법 추가
   - critical depth 자체를 줄이기 (평균 depth는 23% 감소했으나 runtime 변화 거의 없음)
-- **최적화 3 재측정** : 위 3번 참고
+- **현재 main 재프로파일** : 위 호스트 내역은 4번 반영 전 코드 기준이다. 4번이 들어간 상태로 다시 재서 갱신
+- **DAG 구성 6.57s** : 4번을 빼면 남은 호스트 최대 항목. 세 스테이지에 흩어져 있음
+- **`mempool_cluster_ranking` nsys 재측정** : 3번 표를 최대 디자인으로 확장
 
 ---
 
@@ -299,5 +365,6 @@ batch를 하나씩 만들면서 남은 net **전부**가 자기 mark 전체를 c
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-23 | 3번을 nsys로 재측정 — 기존 수치 확인. 호스트가 wall의 70%임을 새로 확인 |
 | 2026-08-22 | journal의 GPU batch generation 구현 (측정 전) |
 | 2026-08-20 | 최적화 1·2·3 정리 (미팅 발표). 2번 critical path 분석, 3번 재측정 과제로 남김 |

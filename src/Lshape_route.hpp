@@ -1,4 +1,5 @@
 #include "graph.hpp"
+#include "nvtx_profile.hpp"
 
 namespace cudb {
 struct net;
@@ -303,13 +304,22 @@ void Lshape_route(vector<int> &nets2route) {
     if(LOG) printf("[%5.1f] Stage 1 initial routing: L-shape DAG GPU route starts\n", elapsed_time());
     const double gpu_route_start_time = elapsed_time();
      for(int i = 0; i < batches.size(); i++) {
+        NVTX_RANGE("S1/batch", STAGE);
         global_timestamp++;
+        NVTX_PUSH("S1/update_cost", UPDATE_COST);
         graph::update_cost();
+        NVTX_POP();
+        NVTX_PUSH("S1/compute_presum", PRESUM);
         graph::compute_presum<<<all_track_cnt, THREAD_NUM, sizeof(double) * XY>>> ();
         graph::finish_cost_refresh();
+        NVTX_POP();
+        NVTX_PUSH("S1/DP", BOTTOM_UP);
         Lshape_route_cuda<<<BLOCK_NUM(batches[i].size()), THREAD_NUM>>> (batches[i].size(), batch_cnt_sum[i], node_cnt_sum, nodes, par_nodes, dist, from, layer_range, global_timestamp);
+        NVTX_POP();
+        NVTX_PUSH("S1/commit", COMMIT);
         graph::batch_wire_update(global_timestamp);
         graph::commit_via_demand<<<BLOCK_NUM(batches[i].size()), THREAD_NUM>>> (batches[i].size(), batch_cnt_sum[i], global_timestamp);
+        NVTX_POP();
     }
     cudaDeviceSynchronize();
     record_runtime_stage("  S1: GPU route batches", gpu_route_start_time);

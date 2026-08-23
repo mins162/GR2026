@@ -19,6 +19,12 @@ rsmt_depth_profile.csv
 # A/B 스크립트가 만드는 결과 디렉터리
 ab_results_*/
 
+# nsys 프로파일 결과 (트레이스는 수백 MB ~ GB)
+nsys_results_*/
+*.nsys-rep
+*.qdrep
+*.sqlite
+
 # 에디터
 .vscode/
 .idea/
