@@ -2,7 +2,8 @@
 
 - 목적 : 2번(Augmented DAG depth)이 멈춘 지점 규명 — "depth −23%인데 runtime 불변"
 - 환경 : `gpu-5`, TITAN RTX (`sm_75`), 연속 실행, GPU batch gen on
-- 방법 : `INSTANTGR_AUGMENTED_DAG_PROFILE=1` + tree-center off/`cpu` A/B
+- 방법 : `INSTANTGR_AUGMENTED_DAG_PROFILE=1` + tree-center off/on A/B
+  (아래 표의 "center on" = `INSTANTGR_TREE_CENTER=cpu`로 실행한 런)
   (로그의 `critical path:` 줄 = batch별 depth 분포, `GPU profile:` 줄 = DP/traceback/commit 분해)
 
 > 결론 : **tree-center는 실제로 작동한다** (phases −24/−31%, S2 GPU −0.56/−1.11s).
@@ -22,7 +23,7 @@
 
 ## 2. A/B 실측
 
-| Stage 2 | group `off` | group `cpu` | cluster `off` | cluster `cpu` |
+| Stage 2 | group center off | group center on | cluster center off | cluster center on |
 | --- | ---: | ---: | ---: | ---: |
 | 직렬 phases | 18,714 | 14,294 (**−23.6%**) | 56,960 | 39,595 (**−30.5%**) |
 | p50/p90/p99/max | 4/63/81/109 | 4/46/59/71 | 131/225/272/294 | 88/149/169/180 |
@@ -37,7 +38,7 @@
 | **전체 wall** | **37.06 s** | 39.01 s | **140.26 s** | 141.61 s |
 
 - score : group 397,594,483 ↔ 397,603,852 / cluster 1,780,695,551 ↔ 1,780,733,108 — 둘 다 노이즈 수준
-- cluster `cpu`의 host prep +1.63s는 tree-center가 안 건드리는 구간 → 공유 서버 노이즈로 판단
+- cluster center on의 host prep +1.63s는 tree-center가 안 건드리는 구간 → 공유 서버 노이즈로 판단
 - 분포 차이 : group은 **꼬리 지배형**(p50=4, 상위 10% batch가 phases의 ~37%), cluster는 **전 batch가 깊음**(p50=131)
   → cluster에서 tree-center 감소율이 더 큼
 
@@ -47,7 +48,7 @@
 
 **DP 시간 ≈ a × level 수 + b × 노드 수**
 
-| 디자인 | a (level 고정비) | b (노드당) | 고정비 몫 (`off` DP 기준) |
+| 디자인 | a (level 고정비) | b (노드당) | 고정비 몫 (center off DP 기준) |
 | --- | ---: | ---: | ---: |
 | `mempool_group` | 121 µs | 45 ns | 2.26 s / 3.52 s = **64%** |
 | `mempool_cluster_ranking` | 81 µs | 53 ns | 4.64 s / 9.68 s = **48%** |
@@ -99,7 +100,7 @@
   S1 depth sum `1899146 -> 1069761` 기존과 자릿수까지 동일
   (S2의 미세 차이는 peel이 2-center 트리에서 반대쪽 center를 골라 S1 라우팅이 노이즈 수준으로 달라진 것)
 
-| 프로덕션 A/B | group `off` | group `cpu` | cluster `off` | cluster `cpu` |
+| 프로덕션 A/B | group center off | group center on | cluster center off | cluster center on |
 | --- | ---: | ---: | ---: | ---: |
 | S2 직렬 phases | 18,714 | 14,389 (−23.1%) | 56,960 | 39,916 (−29.9%) |
 | S2 GPU route | 5.80 s | **5.21 s** | 20.51 s | **18.79 s** |
