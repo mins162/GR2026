@@ -2,12 +2,12 @@
 
 - 목적 : InstantGR을 더 빠른 global routing으로 최적화
 
-## 진행 상황 <sub>최신 2026-08-23</sub>
+## 진행 상황 <sub>최신 2026-08-24</sub>
 
 | 최적화 | 결과 | 상태 |
 | --- | --- | --- |
 | FLUTE (GPU-FLUTE) | RSMT **−35~65%** | 완료 |
-| Augmented DAG depth | depth **−23%**, runtime 변화 없음 | critical path 분석 예정 |
+| Augmented DAG depth | leaf peeling tree-center **기본 on** — S2 GPU −0.6~−1.7s, 순이득 | 완료 ([분석](docs/2026-08-24-s2-critical-path.md)) |
 | vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
 | GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
 

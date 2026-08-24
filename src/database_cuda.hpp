@@ -147,16 +147,19 @@ bool gpu_tree_center_enabled() {
     return value != nullptr && string(value) == "1";
 }
 
-// Exact host-side tree-center experiment.  Unlike INSTANTGR_GPU_TREE_CENTER,
+// Exact host-side tree-center root selection.  Unlike INSTANTGR_GPU_TREE_CENTER,
 // this runs on the already reconstructed RSMT graph used by Stage 2, so its
-// root is guaranteed to attain the graph radius.  Keep it opt-in and limit it
-// to the same high-degree population as GPU-FLUTE by default.
+// root is guaranteed to attain the graph radius.  On by default since leaf
+// peeling made it a net win (2026-08-24 A/B); INSTANTGR_TREE_CENTER=0 disables.
 bool cpu_tree_center_enabled() {
-    const char *value = getenv("INSTANTGR_TREE_CENTER");
-    if(value == nullptr || *value == '\0' || string(value) == "0") return false;
-    if(string(value) != "cpu")
-        throw invalid_argument("INSTANTGR_TREE_CENTER must be 'cpu' or '0'");
-    return true;
+    static const bool enabled = [] {
+        const char *value = getenv("INSTANTGR_TREE_CENTER");
+        if(value == nullptr || *value == '\0' || string(value) == "cpu") return true;
+        if(string(value) != "0")
+            throw invalid_argument("INSTANTGR_TREE_CENTER must be 'cpu' or '0'");
+        return false;
+    }();
+    return enabled;
 }
 
 int cpu_tree_center_min_degree() {
@@ -170,6 +173,16 @@ int cpu_tree_center_min_degree() {
         return static_cast<int>(parsed);
     }();
     return min_degree;
+}
+
+// The legacy-vs-center depth comparison and the BFS oracle for the peeled
+// center cost extra full traversals per net, so they only run in profile runs.
+bool tree_center_stats_enabled() {
+    static const bool enabled = [] {
+        const char *value = getenv("INSTANTGR_AUGMENTED_DAG_PROFILE");
+        return value != nullptr && string(value) == "1";
+    }();
+    return enabled;
 }
 
 struct CpuTreeCenterProfile {
@@ -198,16 +211,21 @@ void print_cpu_tree_center_profile(const char *stage) {
                stage, cpu_tree_center_min_degree());
         return;
     }
+    const double find_seconds = cpu_tree_center_profile.bfs_nanoseconds.load() / 1e9;
+    if(!tree_center_stats_enabled()) {
+        printf("%s CPU tree-center profile: eligible=%lld, aggregate center-find=%.3fs\n",
+               stage, eligible, find_seconds);
+        return;
+    }
     const long long improved = cpu_tree_center_profile.improved_nets.load();
     const long long legacy_sum = cpu_tree_center_profile.legacy_depth_sum.load();
     const long long center_sum = cpu_tree_center_profile.center_depth_sum.load();
     const double reduction = legacy_sum == 0 ? 0.0 :
         100.0 * static_cast<double>(legacy_sum - center_sum) / legacy_sum;
-    const double bfs_seconds = cpu_tree_center_profile.bfs_nanoseconds.load() / 1e9;
     printf("%s CPU tree-center profile: eligible=%lld, improved=%lld (%.1f%%), "
-           "depth sum=%lld -> %lld (%.1f%% reduction), aggregate BFS=%.3fs\n",
+           "depth sum=%lld -> %lld (%.1f%% reduction), aggregate center-find=%.3fs\n",
            stage, eligible, improved, 100.0 * improved / eligible,
-           legacy_sum, center_sum, reduction, bfs_seconds);
+           legacy_sum, center_sum, reduction, find_seconds);
 }
 
 // Set INSTANTGR_RSMT_DEPTH_PROFILE=1 to write rsmt_depth_profile.csv, or set
@@ -872,29 +890,64 @@ RsmtDepthStats rsmt_depth_stats(const vector<vector<int>> &rsmt, int root_overri
             diameter, center0, center1};
 }
 
-// Return the exact tree center of the host RSMT and account for its depth
-// benefit relative to the root used by the caller (node 0 in Stage 1, legacy
-// select_root_net() in Stage 2).
+// Exact tree center by leaf peeling: strip the current leaf layer until the
+// tree is exhausted; the last node enqueued is a center (either one when the
+// tree has two).  Peeling touches each edge once, so unlike the double BFS in
+// rsmt_depth_stats() this is a single traversal, and the thread-local scratch
+// avoids the per-call heap allocations that dominated the old cost.
+int rsmt_tree_center_peel(const vector<vector<int>> &rsmt) {
+    const int node_count = (int) rsmt.size() - 1;
+    if(node_count <= 2) return 0;
+    thread_local vector<int> degree, order;
+    if((int) degree.size() < node_count) {
+        degree.resize(node_count);
+        order.resize(node_count);
+    }
+    int tail = 0;
+    for(int i = 0; i < node_count; ++i) {
+        degree[i] = (int) rsmt[i].size();
+        if(degree[i] == 1) order[tail++] = i;
+    }
+    for(int head = 0; head < tail; ++head) {
+        const int u = order[head];
+        for(int v : rsmt[u]) if(--degree[v] == 1) order[tail++] = v;
+    }
+    return order[tail - 1];
+}
+
+// Return the exact tree center of the host RSMT via leaf peeling.  In profile
+// runs, also account for its depth benefit relative to the root used by the
+// caller (node 0 in Stage 1; legacy_root < 0 lets the stats pass derive the
+// legacy select_root_net() root itself) and check the peeled center against
+// the double-BFS radius oracle.
 int cpu_tree_center_root(const net &target, int legacy_root) {
     static once_flag cpu_tree_center_notice;
     call_once(cpu_tree_center_notice, [] {
-        printf("CPU tree-center: enabled for nets with degree >= %d (exact host RSMT)\n",
+        printf("CPU tree-center: enabled for nets with degree >= %d (exact host RSMT, leaf peeling)\n",
                cpu_tree_center_min_degree());
     });
-    const auto bfs_start = chrono::steady_clock::now();
-    const auto cpu_stats = rsmt_depth_stats(target.rsmt, legacy_root);
-    const auto bfs_end = chrono::steady_clock::now();
+    const auto find_start = chrono::steady_clock::now();
+    const int center = rsmt_tree_center_peel(target.rsmt);
+    const auto find_end = chrono::steady_clock::now();
     cpu_tree_center_profile.eligible_nets.fetch_add(1, memory_order_relaxed);
-    cpu_tree_center_profile.improved_nets.fetch_add(
-        cpu_stats.current_max_depth > cpu_stats.min_max_depth, memory_order_relaxed);
-    cpu_tree_center_profile.legacy_depth_sum.fetch_add(
-        cpu_stats.current_max_depth, memory_order_relaxed);
-    cpu_tree_center_profile.center_depth_sum.fetch_add(
-        cpu_stats.min_max_depth, memory_order_relaxed);
     cpu_tree_center_profile.bfs_nanoseconds.fetch_add(
-        chrono::duration_cast<chrono::nanoseconds>(bfs_end - bfs_start).count(),
+        chrono::duration_cast<chrono::nanoseconds>(find_end - find_start).count(),
         memory_order_relaxed);
-    return cpu_stats.center0;
+    if(tree_center_stats_enabled()) {
+        const auto legacy_stats = rsmt_depth_stats(target.rsmt, legacy_root);
+        const auto center_bfs = rsmt_bfs_dist(target.rsmt, center);
+        const int center_depth = center_bfs.second[center_bfs.first];
+        if(center_depth != legacy_stats.min_max_depth)
+            printf("tree-center peel mismatch: original_net=%d peeled depth=%d radius=%d\n",
+                   target.original_net_id, center_depth, legacy_stats.min_max_depth);
+        cpu_tree_center_profile.improved_nets.fetch_add(
+            legacy_stats.current_max_depth > center_depth, memory_order_relaxed);
+        cpu_tree_center_profile.legacy_depth_sum.fetch_add(
+            legacy_stats.current_max_depth, memory_order_relaxed);
+        cpu_tree_center_profile.center_depth_sum.fetch_add(
+            center_depth, memory_order_relaxed);
+    }
+    return center;
 }
 
 void write_rsmt_depth_profile(const vector<int> &nets2route) {
@@ -973,31 +1026,33 @@ void net::generate_detours(bool *congestionView_cpu, float *congestionView_xsum_
     nodes_cpu.emplace_back(0);
     
     int depth_max = 0;
-    select_root = select_root_net(graph_x);
     // CPU center takes precedence deliberately: it is the correctness oracle
     // for this experiment and lets us measure root-depth impact independently
     // of the currently unverified GPU graph reconstruction.
     if(cpu_tree_center_enabled() && pins.size() >= cpu_tree_center_min_degree()) {
-        select_root = cpu_tree_center_root(*this, select_root);
-    } else if(gpu_tree_center_pos >= 0) {
-        select_root = rsmt_node_for_2d_position(graph_x, gpu_tree_center_pos);
-        assert(select_root >= 0);
-        // Debug-only oracle: the GPU-selected coordinate must attain the CPU
-        // tree radius on the reconstructed, coordinate-contracted RSMT.
-        if(gpu_flute_validation_enabled()) {
-            const auto gpu_stats = rsmt_depth_stats(graph_x, select_root);
-            if(gpu_stats.current_max_depth != gpu_stats.min_max_depth) {
-                const auto &positions = graph_x.back();
-                const auto xy = [] (int point) { return pair<int, int>{point / Y % X, point % Y}; };
-                const auto [gpu_x, gpu_y] = xy(positions[select_root]);
-                const auto [center0_x, center0_y] = xy(positions[gpu_stats.center0]);
-                const auto [center1_x, center1_y] = xy(positions[gpu_stats.center1]);
-                printf("GPU tree-center mismatch: original_net=%d gpu=(%d,%d) depth=%d min=%d cpu_center=(%d,%d),(%d,%d); legacy fallback\n",
-                       original_net_id, gpu_x, gpu_y, gpu_stats.current_max_depth,
-                       gpu_stats.min_max_depth, center0_x, center0_y, center1_x, center1_y);
-                gpu_tree_center_pos = -1;
-                gpu_tree_center_fallback = true;
-                select_root = select_root_net(graph_x);
+        select_root = cpu_tree_center_root(*this, -1);
+    } else {
+        select_root = select_root_net(graph_x);
+        if(gpu_tree_center_pos >= 0) {
+            select_root = rsmt_node_for_2d_position(graph_x, gpu_tree_center_pos);
+            assert(select_root >= 0);
+            // Debug-only oracle: the GPU-selected coordinate must attain the CPU
+            // tree radius on the reconstructed, coordinate-contracted RSMT.
+            if(gpu_flute_validation_enabled()) {
+                const auto gpu_stats = rsmt_depth_stats(graph_x, select_root);
+                if(gpu_stats.current_max_depth != gpu_stats.min_max_depth) {
+                    const auto &positions = graph_x.back();
+                    const auto xy = [] (int point) { return pair<int, int>{point / Y % X, point % Y}; };
+                    const auto [gpu_x, gpu_y] = xy(positions[select_root]);
+                    const auto [center0_x, center0_y] = xy(positions[gpu_stats.center0]);
+                    const auto [center1_x, center1_y] = xy(positions[gpu_stats.center1]);
+                    printf("GPU tree-center mismatch: original_net=%d gpu=(%d,%d) depth=%d min=%d cpu_center=(%d,%d),(%d,%d); legacy fallback\n",
+                           original_net_id, gpu_x, gpu_y, gpu_stats.current_max_depth,
+                           gpu_stats.min_max_depth, center0_x, center0_y, center1_x, center1_y);
+                    gpu_tree_center_pos = -1;
+                    gpu_tree_center_fallback = true;
+                    select_root = select_root_net(graph_x);
+                }
             }
         }
     }

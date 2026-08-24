@@ -8,7 +8,7 @@
 | # | 항목 | 상태 | 갱신일 |
 | --- | --- | --- | --- |
 | 1 | FLUTE 개선 (GPU-FLUTE) | 완료 | 2026-08-20 |
-| 2 | Augmented DAG depth 개선 | depth ↓, runtime 변화 없음 → critical path 분석 예정 | 2026-08-20 |
+| 2 | Augmented DAG depth 개선 | **완료 — leaf peeling으로 순이득 전환, 기본 on** | 2026-08-24 |
 | 3 | vcost / presum 계산 절감 | **nsys 재측정 완료 — 기존 수치 확인됨** | 2026-08-23 |
 | 4 | GPU batch generation | `mempool_group` 전체 −11.9%, `mempool_cluster_ranking` −5.9% | 2026-08-22 |
 
@@ -73,6 +73,20 @@
 - 현재 코드에서는 opt-in 실험으로만 유지
   - `INSTANTGR_TREE_CENTER=cpu` (호스트 측 정확한 tree-center)
   - `INSTANTGR_GPU_TREE_CENTER=1` (GPU 측 근사)
+
+### critical path 분석 (2026-08-24) <sub>결론 : 이득은 실재, host 비용이 상쇄</sub>
+
+- 방법·수치 전체 : **[2026-08-24-s2-critical-path.md](2026-08-24-s2-critical-path.md)**
+- depth 체인은 **Stage 2 전용** (S1은 batch당 커널 1개) — 직렬 phases = Σ batch max depth
+- tree-center는 phases를 **−23.6%(group) / −30.5%(cluster)** 줄이고 S2 GPU도 −0.56 / −1.11s 따라옴
+  — 단 host BFS 1.19 / 3.88s(S1 몫은 단일 스레드 wall)가 상쇄해 전체 wall은 손해
+- DP 시간 ≈ **level 고정비(81~121µs) × level 수 + 45~53ns × 노드 수** — 고정비 몫 48~64% (latency-bound)
+- "augment가 center를 무효화" 가설 **기각** — RSMT depth 감소율과 phases 감소율 일치
+- traceback per-level sync는 총 0.3s 미만 → sync 제거는 우선순위 탈락
+- 지렛대 상한 : level 고정비 전부 제거해도 group ~2.5s / cluster ~5.4s (wall의 4~7%)
+- **후속 완료 (같은 날)** : leaf peeling으로 재구현 — center-find 6.5 → 1.4µs/net, 오라클(이중 BFS 대조) 0건 불일치
+  - 프로덕션 A/B : **순이득 전환** — group GPU −0.59 vs host +0.34, cluster GPU −1.72 vs host +0.48
+  - → **기본 on** (`INSTANTGR_TREE_CENTER=0`으로 끔), 수치는 분석 문서 §6
 
 ---
 
@@ -371,6 +385,8 @@
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-24 | 2번 critical path 분석 완료 — tree-center 이득 실재(host 비용에 상쇄), DP는 level 고정비 지배 |
+| 2026-08-24 | tree-center를 leaf peeling으로 재구현 — 두 디자인 모두 순이득, 기본 on 전환 |
 | 2026-08-23 | 3번을 nsys로 재측정 — 기존 수치 확인. 호스트가 wall의 70%임을 새로 확인 |
 | 2026-08-22 | journal의 GPU batch generation 구현 (측정 전) |
 | 2026-08-20 | 최적화 1·2·3 정리 (미팅 발표). 2번 critical path 분석, 3번 재측정 과제로 남김 |
