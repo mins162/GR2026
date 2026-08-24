@@ -112,6 +112,8 @@
   cluster GPU −1.72 vs host +0.48 → **순이득 ~1.2s** (S2 preproc +0.89는 서버 부하 노이즈로 판단;
   전부 귀속시켜도 부호 유지)
 - score : group +2,875 / cluster +45,159 (+0.0025%) — 노이즈 수준
+- **evaluator 확정** (cluster `test_cpu.out`) : total **1,780,854,733** — 8-23 best(`opt`) 1,780,813,614 대비
+  +41,119 (+0.0023%, 노이즈), WL 1,189,008,223 · via 267,500,576 · OF 324,345,934, open 0 · incompleted 0
 - → **기본 on 전환** : `INSTANTGR_TREE_CENTER` 미설정 시 켜짐, `0`으로 끔.
   GPU 근사 실험(`INSTANTGR_GPU_TREE_CENTER=1`)은 `INSTANTGR_TREE_CENTER=0`과 함께 써야 함
 
