@@ -90,6 +90,31 @@
 - 예상 : host 비용 1.19/3.88s → ~0.2/0.5s → tree-center가 **순이득 전환** (group ~+0.4s, cluster ~+0.7s)
 - 검증 : 이중 BFS의 `min_max_depth`와 peeling center의 depth 일치 대조
 
+### 구현 결과 (같은 날) — 순이득 전환 확인, 기본 on 전환
+
+- 구현 : `rsmt_tree_center_peel()` — thread-local 버퍼, 할당 0회.
+  legacy 대비 통계와 이중 BFS 오라클은 `INSTANTGR_AUGMENTED_DAG_PROFILE=1` 뒤로 게이팅
+- 알고리즘 검증 : 무작위 트리 20,396개(경로·스타·skew, ≤2,000노드)에서 peel center가 항상 radius 달성
+- 통합 검증 (오라클 런, group) : `peel mismatch` 0건 / 126,006 + 81,968 net,
+  S1 depth sum `1899146 -> 1069761` 기존과 자릿수까지 동일
+  (S2의 미세 차이는 peel이 2-center 트리에서 반대쪽 center를 골라 S1 라우팅이 노이즈 수준으로 달라진 것)
+
+| 프로덕션 A/B | group `off` | group `cpu` | cluster `off` | cluster `cpu` |
+| --- | ---: | ---: | ---: | ---: |
+| S2 직렬 phases | 18,714 | 14,389 (−23.1%) | 56,960 | 39,916 (−29.9%) |
+| S2 GPU route | 5.80 s | **5.21 s** | 20.51 s | **18.79 s** |
+| S1 DAG DFS | 1.43 s | 1.56 s | 6.06 s | 6.51 s |
+| center-find | — | 0.184+0.073 s | — | 0.646+0.257 s |
+| 전체 wall | 38.27 s | 34.69 s | 137.44 s | 134.53 s |
+
+- center-find 단가 : **1.4~1.5µs/net** (기존 BFS 4.6~6.5µs의 ~4×)
+- 귀속 수지 : group GPU −0.59 vs host +0.34 → **순이득 ~0.25s**,
+  cluster GPU −1.72 vs host +0.48 → **순이득 ~1.2s** (S2 preproc +0.89는 서버 부하 노이즈로 판단;
+  전부 귀속시켜도 부호 유지)
+- score : group +2,875 / cluster +45,159 (+0.0025%) — 노이즈 수준
+- → **기본 on 전환** : `INSTANTGR_TREE_CENTER` 미설정 시 켜짐, `0`으로 끔.
+  GPU 근사 실험(`INSTANTGR_GPU_TREE_CENTER=1`)은 `INSTANTGR_TREE_CENTER=0`과 함께 써야 함
+
 ## 재현
 
 ```bash

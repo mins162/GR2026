@@ -147,16 +147,19 @@ bool gpu_tree_center_enabled() {
     return value != nullptr && string(value) == "1";
 }
 
-// Exact host-side tree-center experiment.  Unlike INSTANTGR_GPU_TREE_CENTER,
+// Exact host-side tree-center root selection.  Unlike INSTANTGR_GPU_TREE_CENTER,
 // this runs on the already reconstructed RSMT graph used by Stage 2, so its
-// root is guaranteed to attain the graph radius.  Keep it opt-in and limit it
-// to the same high-degree population as GPU-FLUTE by default.
+// root is guaranteed to attain the graph radius.  On by default since leaf
+// peeling made it a net win (2026-08-24 A/B); INSTANTGR_TREE_CENTER=0 disables.
 bool cpu_tree_center_enabled() {
-    const char *value = getenv("INSTANTGR_TREE_CENTER");
-    if(value == nullptr || *value == '\0' || string(value) == "0") return false;
-    if(string(value) != "cpu")
-        throw invalid_argument("INSTANTGR_TREE_CENTER must be 'cpu' or '0'");
-    return true;
+    static const bool enabled = [] {
+        const char *value = getenv("INSTANTGR_TREE_CENTER");
+        if(value == nullptr || *value == '\0' || string(value) == "cpu") return true;
+        if(string(value) != "0")
+            throw invalid_argument("INSTANTGR_TREE_CENTER must be 'cpu' or '0'");
+        return false;
+    }();
+    return enabled;
 }
 
 int cpu_tree_center_min_degree() {
