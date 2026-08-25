@@ -22,6 +22,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 | `INSTANTGR_INCREMENTAL_PRESUM` | on | presum도 동일하게 증분 갱신 |
 | `INSTANTGR_GPU_BATCH_GEN` | on | batch generation을 GPU에서 수행 (journal Sec. III-D). `0`이면 CPU first-fit |
 | `INSTANTGR_TREE_CENTER` | on | 호스트 측 정확한 tree-center 루트 선택 (leaf peeling). `0`이면 legacy BFS 루트 |
+| `INSTANTGR_INCREMENTAL_COMMIT` | on | wire demand commit(`batch_wire_update`)의 presum·commit·clear를 traceback이 실제로 마킹한 track으로만 한정. `0`이면 full-grid 경로 |
 
 ## 튜닝 노브
 

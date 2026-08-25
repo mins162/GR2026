@@ -48,6 +48,11 @@ __managed__ bool incremental_vcost_on = false;
 // stored prefix sums.
 __managed__ bool *track_dirty;
 __managed__ bool incremental_presum_on = false;
+// Same track key, but for the wire-demand commit: a track is flagged when the
+// traceback drops a pre_demand marker on it, and only flagged tracks need the
+// prefix-sum / commit / clear passes of batch_wire_update.  Cleared per track
+// by the commit kernel itself, so unflagged tracks are provably all-zero.
+__managed__ bool *pre_demand_track_dirty;
 __managed__ int *net_ids;
 int *net_ids_cpu;
 int global_timestamp = 0;
@@ -1777,6 +1782,8 @@ void build_cuda_database() {
     cudaMalloc(&dirty_cells, (size_t) dirty_cell_capacity * sizeof(int));
     cudaMalloc(&track_dirty, (size_t) L * XY * sizeof(bool));
     cudaMemset(track_dirty, 1, (size_t) L * XY * sizeof(bool));
+    cudaMalloc(&pre_demand_track_dirty, (size_t) L * XY * sizeof(bool));
+    cudaMemset(pre_demand_track_dirty, 0, (size_t) L * XY * sizeof(bool));
     cudaMalloc(&presum, L * X * Y * sizeof(double));
     cudaMalloc(&demand, L * X * Y * sizeof(float));
     cudaMalloc(&pre_demand, L * X * Y * sizeof(int));

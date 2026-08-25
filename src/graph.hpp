@@ -122,7 +122,10 @@ __device__ void update_single_vcost_ispd24(int l, int x, int y, float *vcost) {
 }
 
 
-__global__ void compute_presum_general(int *to_sum) {
+__global__ void compute_presum_general(int *to_sum, const bool *dirty = nullptr) {
+    // With a dirty mask, a clean track is left untouched: nothing wrote to it
+    // since its last clear, so it is all zero and its prefix sum is too.
+    if(dirty && !dirty[idx2track[blockIdx.x]]) return;
     extern __shared__ int sum2[];
     if(threadIdx.x == 0) sum2[0] = 0;
     int l = idx2track[blockIdx.x] / XY;
@@ -187,15 +190,25 @@ __global__ void update_vcost_selective(float *out) {
         }
     }
 }
+// Flag the pre_demand track owning one cell.  This is the only place a track
+// can become non-zero, which is what lets batch_wire_update() skip the rest.
+// Marked per written cell rather than once per segment so it holds without
+// assuming the segment runs along its layer's preferred direction.
+__device__ void mark_pre_demand_track(int l, int x, int y) {
+    pre_demand_track_dirty[l * XY + ((l & 1 ^ DIR) ? x : y)] = true;
+}
 __device__ void atomic_add_unit_demand_wire_segment(int l, int minx, int maxx, int miny, int maxy, int stamp, int K = 1) {
     assert(minx == maxx || miny == maxy);
 
+    mark_pre_demand_track(l, minx, miny);
     atomicAdd(pre_demand + IDX(l, minx, miny), K);
     if(minx == maxx) {
+        mark_pre_demand_track(l, minx, maxy);
         atomicAdd(pre_demand + IDX(l, minx, maxy), -K);
         timestamp[IDX(l, minx, maxy)] = stamp;
     }
     if(miny == maxy) {
+        mark_pre_demand_track(l, maxx, miny);
         atomicAdd(pre_demand + IDX(l, maxx, miny), -K);
         timestamp[IDX(l, maxx, miny)] = stamp;
     }
@@ -217,10 +230,56 @@ __global__ void commit_all_edge(int stamp) {
         atomicAdd(&total_wirelength, pre_demand[IDX(l, x, y + 1)] * y_edge_len[y]);
     }
 }
+// Track-based twin of commit_all_edge + the pre_demand clear: one block per
+// track, and a track whose flag is down is skipped outright — its pre_demand
+// is all zero, so the full-grid pass would visit it for nothing.  The commit
+// loop reads the neighbor cell's prefix sum, so the clear has to wait for the
+// whole block behind a barrier before zeroing the same cells.
+__global__ void commit_dirty_tracks(int stamp) {
+    const int track = idx2track[blockIdx.x];
+    if(!pre_demand_track_dirty[track]) return;
+    const int l = track / XY, pos = track % XY;
+    if(l & 1 ^ DIR) {
+        const int x = pos;
+        for(int y = threadIdx.x; y + 1 < Y; y += blockDim.x) if(pre_demand[IDX(l, x, y + 1)] > 0) {
+            demand[IDX(l, x, y)] += pre_demand[IDX(l, x, y + 1)];
+            mark_dirty_cell(IDX(l, x, y));
+            timestamp[IDX(l, x, y)] = stamp;
+            atomicAdd(&total_wirelength, pre_demand[IDX(l, x, y + 1)] * y_edge_len[y]);
+        }
+        __syncthreads();
+        for(int y = threadIdx.x; y < Y; y += blockDim.x) pre_demand[IDX(l, x, y)] = 0;
+    } else {
+        const int y = pos;
+        for(int x = threadIdx.x; x + 1 < X; x += blockDim.x) if(pre_demand[IDX(l, x + 1, y)] > 0) {
+            demand[IDX(l, x, y)] += pre_demand[IDX(l, x + 1, y)];
+            mark_dirty_cell(IDX(l, x, y));
+            timestamp[IDX(l, x, y)] = stamp;
+            atomicAdd(&total_wirelength, pre_demand[IDX(l, x + 1, y)] * x_edge_len[x]);
+        }
+        __syncthreads();
+        for(int x = threadIdx.x; x < X; x += blockDim.x) pre_demand[IDX(l, x, y)] = 0;
+    }
+    if(threadIdx.x == 0) pre_demand_track_dirty[track] = false;
+}
+
+bool incremental_commit_host() {
+    static const bool on = [] {
+        const char *value = getenv("INSTANTGR_INCREMENTAL_COMMIT");
+        return value == nullptr || string(value) != "0";
+    }();
+    return on;
+}
+
 void batch_wire_update(int stamp) {
-    compute_presum_general<<<all_track_cnt, THREAD_NUM, sizeof(int) * XY>>> (pre_demand);
-    commit_all_edge<<<BLOCK_NUM(L * X * Y), THREAD_NUM>>> (stamp);
-    cudaMemset(pre_demand, 0, sizeof(int) * L * X * Y);
+    if(incremental_commit_host()) {
+        compute_presum_general<<<all_track_cnt, THREAD_NUM, sizeof(int) * XY>>> (pre_demand, pre_demand_track_dirty);
+        commit_dirty_tracks<<<all_track_cnt, THREAD_NUM>>> (stamp);
+    } else {
+        compute_presum_general<<<all_track_cnt, THREAD_NUM, sizeof(int) * XY>>> (pre_demand);
+        commit_all_edge<<<BLOCK_NUM(L * X * Y), THREAD_NUM>>> (stamp);
+        cudaMemset(pre_demand, 0, sizeof(int) * L * X * Y);
+    }
 }
 
 

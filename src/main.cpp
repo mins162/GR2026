@@ -100,11 +100,12 @@ void runtime_breakdown() {
         snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (max-degree=%d)",
                  cudb::gpu_flute_max_degree());
     printf("\nconfig: gpu-flute=%s | wcost-presum-fusion=%s | incremental-vcost=%s (dirty limit %.0f%%) | "
-           "incremental-presum=%s | tree-center=%s\n",
+           "incremental-presum=%s | incremental-commit=%s | tree-center=%s\n",
            gpu_flute_desc, fusion,
            cudb::incremental_vcost_on ? "on" : "off",
            100.0 * cudb::dirty_cell_limit / ((double) cudb::L * cudb::X * cudb::Y),
            cudb::incremental_presum_on ? "on" : "off",
+           graph::incremental_commit_host() ? "on" : "off",
            cudb::cpu_tree_center_enabled() ? "cpu" : (cudb::gpu_tree_center_enabled() ? "gpu" : "off"));
 
     // Grid geometry, so a pasted breakdown can be turned into bytes-per-rebuild
