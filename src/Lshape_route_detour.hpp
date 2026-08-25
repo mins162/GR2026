@@ -362,86 +362,117 @@ __device__ double flt_best_incoming_cost(const double *edge_costs, int node_idx,
 }
 
 // FLT edge precompute — journal Algorithm 3.  One thread per (DAG edge,
-// arrival layer) fills that arrival layer's column of the edge's lookup table:
-// for every starting layer it walks the candidate change points once and keeps
-// the cheapest.  Grid costs move with every batch, so this runs after the
-// batch's cost refresh and before the bottom-up DP reads the table.
-__global__ void flt_edge_precompute(int node_total) {
+// arrival layer) fills that arrival layer's column of the edge's lookup table.
+// The 4-5 sibling threads of an edge sit in the same warp and sweep the
+// candidate points in lockstep over the same absolute layer sequence, so each
+// presum / vcost cell is fetched by one broadcast transaction instead of once
+// per sibling — the kernel is transaction-bound, and per (edge, point) this
+// takes the unique loads from ~80 down to ~12 without giving up thread count.
+// The DP only ever reads (start, arrival) pairs whose two layers both fit the
+// edge's direction — one parity — so entries of the other parity are left
+// stale rather than reset.  Grid costs move with every batch, so this runs
+// after the batch's cost refresh and before the bottom-up DP reads the table.
+// Per-thread state is deliberately just the output column (best/bp): holding
+// the per-point layer sweeps in indexed arrays instead costs ~130 registers,
+// which caps the SM at a third of its threads — the arrays lose more to
+// occupancy than they save in L1-hit re-reads.  The launch bound documents
+// and enforces that a 512-thread block must stay launchable.
+__global__ void __launch_bounds__(THREAD_NUM) flt_edge_precompute(int par_total) {
     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    const int node_idx = tid / MAX_LAYER;
-    if(node_idx >= node_total) return;
-    // Every column of the table needs resetting, so the bound here is the table
-    // width rather than the routable layer count.
+    const int par_id = tid / MAX_LAYER;
+    if(par_id >= par_total) return;
     const int arrive_layer = tid % MAX_LAYER;
-    if(arrive_layer < MIN_ROUTE_LAYER || arrive_layer > FLT_LAYERS) return;
+    if(arrive_layer < MIN_ROUTE_LAYER) return;
+    // The batch flattens currentChildIDX to child_node * 10 + slot, so the
+    // edge's child node comes straight back out of it.  Indexing threads by
+    // edge instead of by node keeps every thread's work bounded by the
+    // candidate-point cap: a node-indexed thread walks all of its node's
+    // incoming edges, and the skew of that count sets the whole launch's tail.
+    const int node_idx = currentChildIDX[par_id] / 10;
     const int nx = nodes[node_idx] / Y % X, ny = nodes[node_idx] % Y;
 
-    for(int par_id = par_num_sum[node_idx]; par_id < par_num_sum[node_idx + 1]; par_id++) {
+    {
         double *edge_costs = cost_edges + (long long) par_id * FLT_LAYER_PAIRS;
         int *change_points = best_change + (long long) par_id * FLT_LAYER_PAIRS;
-        // The table is reused across batches, so every entry this thread owns
-        // has to be reset even when the pair turns out to be illegal.
-        for(int start = 0; start < FLT_LAYERS; start++) {
-            edge_costs[start * FLT_LAYERS + arrive_layer - 1] = INF;
-            change_points[start * FLT_LAYERS + arrive_layer - 1] = -1;
-        }
         const int par_idx = par_nodes[par_id];
         const int px = nodes[par_idx] / Y % X, py = nodes[par_idx] % Y;
-        if(arrive_layer > L || !flt_layer_fits_edge(arrive_layer, nx, ny, px, py)) continue;
-        // The diagonal is the plain single-layer wire the pre-FLT DP used, and
-        // is written as that one expression so a run that never picks a layer
-        // change reproduces the pre-FLT solution exactly.
-        edge_costs[(arrive_layer - 1) * FLT_LAYERS + arrive_layer - 1] =
-            graph::wire_segment_cost(arrive_layer - 1, min(nx, px), max(nx, px), min(ny, py), max(ny, py));
 
-        const bool along_x = ny == py && nx != px;
+        if(nx == px && ny == py) {
+            // Stacked nodes: a zero-length edge fits every layer, so the DP
+            // reads the whole table and every column must be rewritten.  With
+            // no wire to split there is nothing to gain from changing layer.
+            for(int s = 0; s < FLT_LAYERS; s++) {
+                edge_costs[s * FLT_LAYERS + arrive_layer - 1] = s == arrive_layer - 1 ? 0 : INF;
+                change_points[s * FLT_LAYERS + arrive_layer - 1] = -1;
+            }
+            return;
+        }
+        if(arrive_layer > L || !flt_layer_fits_edge(arrive_layer, nx, ny, px, py)) return;
+        // Fitting layers are f0, f0 + 2, ... — see flt_layer_fits_edge.
+        const bool along_x = ny == py;
+        const int f0 = ((along_x ? 1 : 0) ^ DIR) ? 1 : 2;
+        const int nf = (L - f0) / 2 + 1;
+        const int aidx = (arrive_layer - f0) / 2;
+
+        // pa sits at the low coordinate, pb at the high one; which prefix
+        // difference is the start-side wire depends on which end the child is.
+        int ax = nx, ay = ny, bx = px, by = py;
+        const bool child_low = along_x ? nx < px : ny < py;
+        if(!child_low) { ax = px; ay = py; bx = nx; by = ny; }
+        const double pa_a = presum[IDX(arrive_layer - 1, ax, ay)];
+        const double pb_a = presum[IDX(arrive_layer - 1, bx, by)];
+        double best[5];
+        int bp[5];
+        for(int k = 0; k < 5; k++) {
+            best[k] = INF;
+            bp[k] = -1;
+        }
+
         const int from = along_x ? nx : ny, to = along_x ? px : py;
         const int span = abs(to - from);
         // A change point has to be interior: putting it on an endpoint would
         // duplicate the via stack that node already emits for itself.
-        if(span < 2) continue;
-        const int step = max(span / FLT_MAX_POINTS, 1), advance = to > from ? 1 : -1;
-        // Only layers of the arrival layer's parity can carry this edge, so a
-        // change stacks vias two layers at a time and the stack cost grows by a
-        // fixed pair of terms per step.  Walking the points outermost lets one
-        // pass over a point serve every starting layer, which is what keeps the
-        // via lookups from being repeated per layer pair.
-        double best[FLT_LAYERS + 1];
-        int best_point[FLT_LAYERS + 1];
-        for(int start = MIN_ROUTE_LAYER; start <= FLT_LAYERS; start++) {
-            best[start] = INF;
-            best_point[start] = -1;
-        }
-        for(int offset = step; offset < span; offset += step) {
-            const int c = from + advance * offset;
-            const int cx = along_x ? c : nx, cy = along_x ? ny : c;
-            const double arrival_wire =
-                graph::wire_segment_cost(arrive_layer - 1, min(cx, px), max(cx, px), min(cy, py), max(cy, py));
-            double via = 0;
-            for(int start = arrive_layer + 2; start <= L; start += 2) {
-                via += vcost[IDX(start - 3, cx, cy)] + vcost[IDX(start - 2, cx, cy)];
-                const double cost = graph::wire_segment_cost(start - 1, min(nx, cx), max(nx, cx), min(ny, cy), max(ny, cy)) +
-                                    arrival_wire + via;
-                if(cost < best[start]) {
-                    best[start] = cost;
-                    best_point[start] = c;
+        if(span >= 2) {
+            const int step = max(span / FLT_MAX_POINTS, 1), advance = to > from ? 1 : -1;
+            for(int offset = step; offset < span; offset += step) {
+                const int c = from + advance * offset;
+                const int cx = along_x ? c : nx, cy = along_x ? ny : c;
+                // Via prefix from f0 up to the arrival layer at this point; the
+                // sweep below rebuilds the same running sum for every layer, so
+                // any pair's stack is a difference of the two.  The re-reads
+                // this costs measure cheaper than sweeping outward from the
+                // arrival layer, whose per-thread loop bounds diverge inside
+                // the warp; here the main sweep's bounds are uniform.
+                double vs_a = 0;
+                for(int k = 1; k <= aidx; k++) {
+                    const int l = f0 + 2 * k;
+                    vs_a += vcost[IDX(l - 3, cx, cy)] + vcost[IDX(l - 2, cx, cy)];
                 }
-            }
-            via = 0;
-            for(int start = arrive_layer - 2; start >= MIN_ROUTE_LAYER; start -= 2) {
-                via += vcost[IDX(start - 1, cx, cy)] + vcost[IDX(start, cx, cy)];
-                const double cost = graph::wire_segment_cost(start - 1, min(nx, cx), max(nx, cx), min(ny, cy), max(ny, cy)) +
-                                    arrival_wire + via;
-                if(cost < best[start]) {
-                    best[start] = cost;
-                    best_point[start] = c;
+                const double pp_a = presum[IDX(arrive_layer - 1, cx, cy)];
+                const double suffix = child_low ? pb_a - pp_a : pp_a - pa_a;
+                double vs_run = 0;
+                for(int k = 0; k < nf; k++) {
+                    const int l = f0 + 2 * k;
+                    if(k) vs_run += vcost[IDX(l - 3, cx, cy)] + vcost[IDX(l - 2, cx, cy)];
+                    if(k == aidx) continue;
+                    const double pp_k = presum[IDX(l - 1, cx, cy)];
+                    const double prefix = child_low ? pp_k - presum[IDX(l - 1, ax, ay)]
+                                                    : presum[IDX(l - 1, bx, by)] - pp_k;
+                    const double cost = prefix + suffix + (k > aidx ? vs_run - vs_a : vs_a - vs_run);
+                    if(cost < best[k]) {
+                        best[k] = cost;
+                        bp[k] = c;
+                    }
                 }
             }
         }
-        for(int start = arrive_layer & 1 ? 1 : 2; start <= L; start += 2) {
-            if(start == arrive_layer) continue;
-            edge_costs[(start - 1) * FLT_LAYERS + arrive_layer - 1] = best[start];
-            change_points[(start - 1) * FLT_LAYERS + arrive_layer - 1] = best_point[start];
+        for(int k = 0; k < nf; k++) {
+            const int e = (f0 + 2 * k - 1) * FLT_LAYERS + arrive_layer - 1;
+            // The diagonal is the plain single-layer wire the pre-FLT DP used,
+            // so a run that never picks a layer change reproduces the pre-FLT
+            // solution exactly.
+            edge_costs[e] = k == aidx ? pb_a - pa_a : best[k];
+            change_points[e] = k == aidx ? -1 : bp[k];
         }
     }
 }
@@ -1063,7 +1094,8 @@ void Lshape_route_detour(vector<int> &nets2route) {
         {
             NVTX_PUSH("S2/flt_precompute", FLT);
             start_augmented_dag_gpu_timer();
-            flt_edge_precompute<<<BLOCK_NUM(node_total * MAX_LAYER), THREAD_NUM>>> (node_total);
+            const int par_total = par_num_sum_cpu[node_total];
+            flt_edge_precompute<<<BLOCK_NUM(par_total * MAX_LAYER), THREAD_NUM>>> (par_total);
             stop_augmented_dag_gpu_timer(augmented_dag_gpu_profile.flt_precompute_seconds);
             NVTX_POP();
         }
