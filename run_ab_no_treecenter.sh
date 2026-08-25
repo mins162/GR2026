@@ -27,12 +27,12 @@ for d in "${DESIGNS[@]}"; do
      INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 \
      INSTANTGR_GPU_FLUTE=1 INSTANTGR_INCREMENTAL_VCOST=1 INSTANTGR_INCREMENTAL_PRESUM=1 \
      ./InstantGR -cap "$cap" -net "$net" -out "$OUT/$d.opt.out") \
-     > "$OUT/$d.opt.log" 2>&1
+     2>&1 | tee "$OUT/$d.opt.log"
 
     echo "== $d : baseline (paper) =="
     (cd "$ROOT/baseline/run" && \
      ./InstantGR -cap "$cap" -net "$net" -out "$OUT/$d.base.out") \
-     > "$OUT/$d.base.log" 2>&1
+     2>&1 | tee "$OUT/$d.base.log"
 
     "$ROOT/run/evaluator" "$cap" "$net" "$OUT/$d.opt.out"  > "$OUT/$d.opt.eval"  2>&1
     "$ROOT/run/evaluator" "$cap" "$net" "$OUT/$d.base.out" > "$OUT/$d.base.eval" 2>&1

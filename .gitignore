@@ -13,6 +13,7 @@ baseline/run/InstantGR.*
 *.out
 *.log
 run/*.eval
+run/logs*/
 baseline/run/*.eval
 rsmt_depth_profile.csv
 
@@ -29,3 +30,6 @@ nsys_results_*/
 .vscode/
 .idea/
 *.swp
+
+# 벤치마크 입력 (Google Drive에서 별도 다운로드, 수백 MB~GB)
+benchmarks/
