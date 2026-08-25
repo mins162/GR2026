@@ -1,6 +1,6 @@
 # InstantGR 최적화 정리
 
-- 최종 업데이트 : **2026-08-25**
+- 최종 업데이트 : **2026-08-26**
 - 기준 자료 : 2026-08-20 미팅 발표 (`0820 논문.pptx`, 슬라이드 21~33)
 - 대상 : ISPD 2024 global routing (InstantGR)
 - 벤치마크 : `mempool_group` (3.2M net), `mempool_cluster_ranking` (10.6M net)
@@ -13,6 +13,7 @@
 | 4 | GPU batch generation | `mempool_group` 전체 −11.9%, `mempool_cluster_ranking` −5.9% | 2026-08-22 |
 | 5 | wire demand commit 증분화 | **완료 — 전체 −17.6%(`mempool_group`) / −8.8%(`bsg_chip`)** | 2026-08-25 |
 | 6 | FLT (journal Sec. V) | **구현 완료, 미병합** — score −0.256%, 런타임 +11.9%(`mempool_group`) | 2026-08-25 |
+| 7 | input 파싱 ∥ net 쪼개기 파이프라인 | **완료 — pre-route −0.9s(`mempool_group`) / −1.7s(`mempool_cluster_ranking`)** | 2026-08-26 |
 
 ---
 
@@ -412,6 +413,28 @@
 
 ---
 
+## 7. input 파싱 ∥ net 쪼개기 파이프라인 <sub>2026-08-26</sub>
+
+- [파이프라인 계획](2026-08-25-pipeline-plan.md) 후보 표 2번의 실현
+- `build_cuda_database()`를 구간별로 재보니 겹칠 가치가 있는 건 net 쪼개기 루프(1.18s) 하나 —
+  cap만으로 되는 grid 구축은 0.18s뿐이라 "cap 후 grid 먼저"는 무익
+- 스트리밍 파서 없이 해결 : 파서가 완성 net 개수를 atomic으로 publish,
+  소비자 스레드가 뒤따라가며 subnet 분해 + hpwl 수행 (`cudb::build_nets_from_parse`)
+- `db::nets`는 사전 reserve로 재할당이 없어 lock 불필요
+
+### 결과 (pre-route 경계 = Stage 1 RSMT 시작 시각)
+
+| 디자인 | base | pipe | 순이득 |
+| --- | ---: | ---: | ---: |
+| `mempool_group` | 6.1 s | 5.2 s | **−0.9 s** |
+| `mempool_cluster_ranking` | 18.9 s | 17.2 s | **−1.7 s** |
+
+- 파서 경합 비용(group +0.2s / cluster +0.8s)을 제한 순이득
+- score : `mempool_tile_rank` 바이트 동일, `mempool_group` 노이즈 수준
+- 상세 : **[archive/2026-08-26-input-net-split-pipeline.md](archive/2026-08-26-input-net-split-pipeline.md)**
+
+---
+
 ## 다음 할 일 <sub>2026-08-20 미팅 기준</sub>
 
 - **FLUTE 가속 파이프라인**
@@ -431,6 +454,7 @@
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-26 | 7번 input 파싱 ∥ net 쪼개기 파이프라인 — pre-route −0.9s(`mempool_group`) / −1.7s(`mempool_cluster_ranking`). cluster+GPU-FLUTE OOM(12GB) 확인 |
 | 2026-08-25 | 6번 FLT 구현 (`feat/journal-flt`, 미병합) — score −0.256% / 런타임 +11.9% |
 | 2026-08-25 | 5번 wire demand commit 증분화 — 전체 −17.6%(`mempool_group`) / −8.8%(`bsg_chip`) |
 | 2026-08-24 | 2번 critical path 분석 완료 — tree-center 이득 실재(host 비용에 상쇄), DP는 level 고정비 지배 |

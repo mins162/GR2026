@@ -161,9 +161,16 @@ int main(int argc, char *argv[]) {
     program_start = std::chrono::high_resolution_clock::now();
 
     const int cap_file_idx = 2, net_file_idx = 4, out_file_idx = 6;
+    // Runs alongside db::read(): the net split consumes finished db::nets
+    // entries as the parser produces them.
+    thread net_split_thread(cudb::build_nets_from_parse);
     db::read(argv[cap_file_idx], argv[net_file_idx]);
 
     double stage_start = elapsed_time();
+    net_split_thread.join();
+    record_runtime_stage("wait for net split", stage_start);
+
+    stage_start = elapsed_time();
     out_file = fopen(argv[out_file_idx], "w");
     record_runtime_stage("open output", stage_start);
 

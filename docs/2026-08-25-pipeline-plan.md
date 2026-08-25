@@ -56,7 +56,7 @@
 | 후보 | 구간 | 규모 (group/cluster) | 비고 |
 | --- | --- | --- | --- |
 | **S1 route ∥ S2 preprocessing** | S2 RSMT/DAG 재구성이 overlap 없음 (`src/Lshape_route_detour.hpp:541-550`, 8-23 확인) | ~1.8 / 7.1s | 닫기 정책 문제 없음 — **가장 안전한 첫 적용처** |
-| input 파싱 ∥ CUDA DB build | 파싱 끝나야 build 시작 | 4.7+1.6 / 14.2+6.0s | net 단위 스트리밍 파싱 필요, 파서 구조 확인부터 |
+| ~~input 파싱 ∥ CUDA DB build~~ | **완료 (2026-08-26)** — 스트리밍 파싱 불필요, net 쪼개기만 소비자 스레드로 | 순이득 0.9 / 1.7s | [archive/2026-08-26-input-net-split-pipeline.md](archive/2026-08-26-input-net-split-pipeline.md) |
 | S2 host DAG prep/upload ∥ 직전 batch route | batch별 host 준비를 미리 | 2.6 / 8.3s | 이미 일부 겹치는지 코드 확인 필요 |
 
 - 공통 원칙 : 겹치는 두 쪽이 CPU↔GPU면 이득이 크고, GPU↔GPU면 유휴율부터 nsys로 확인할 것

@@ -184,6 +184,7 @@ void read(char cap_file_name[], char net_file_name[]) {
             if(l) assert(layers[l].dir != layers[l - 1].dir);
         }
 
+        db_cap_parsed.store(true, std::memory_order_release);
         printf("[%5.1f] read cap file done: duration=%.2fs", elapsed_time(), elapsed_time() - cap_start_time);
         cout << endl;
     };
@@ -235,6 +236,7 @@ void read(char cap_file_name[], char net_file_name[]) {
                     if(buffer[buf_pt++] == ')') { net_end = true; break; }
                 if(net_end) { 
                     nets.back().init(pin_id, access_points, minx, maxx, miny, maxy);
+                    db_parsed_net_count.store(nets.size(), std::memory_order_release);
                     break;
                 }
             }
@@ -242,6 +244,7 @@ void read(char cap_file_name[], char net_file_name[]) {
             if(buf_pt == fsize) break;
         }
 
+        db_parse_finished.store(true, std::memory_order_release);
         printf("[%5.1f] read net file done: duration=%.2fs", elapsed_time(), elapsed_time() - net_start_time);
         cout << endl;
         
