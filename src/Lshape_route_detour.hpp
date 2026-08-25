@@ -17,9 +17,22 @@ void print_cpu_tree_center_profile(const char *stage);
 #define MAX_LAYER 10
 #define MIN_ROUTE_LAYER 1
 #define MAX_DEPTH 5000
+// FLT (journal Sec. V) lookup-table geometry.  ISPD24 fixes the routable layer
+// count at 9, which is what the cost_edges / best_change allocations of 81
+// entries per DAG edge already assume.
+#define FLT_LAYERS 9
+#define FLT_LAYER_PAIRS (FLT_LAYERS * FLT_LAYERS)
+// Journal Sec. V: an edge spanning k G-cells is sampled at spacing
+// max(k / 20, 1), so at most 20 candidate layer-change points are tried.
+#define FLT_MAX_POINTS 20
 __managed__ double *cost_edges;
 __managed__ int *best_change;
 __managed__ int edge_cnt;
+__managed__ bool flt_on = false;
+// FLT replaces the traceback's single wire segment per DAG edge with two
+// segments plus a via, and routes[] is written without a bounds check.  Track
+// how full the fullest net's buffer got, in tenths of a percent of its budget.
+__managed__ int route_buffer_peak_permille = 0;
 
 namespace Lshape_route_detour {
 
@@ -79,6 +92,13 @@ bool augmented_dag_profile_enabled() {
     return value != nullptr && string(value) == "1";
 }
 
+// FLT (journal Sec. V) trades runtime for quality, so it is opt-in rather than
+// on by default like the other optimizations.
+bool flt_enabled() {
+    const char *value = getenv("INSTANTGR_FLT");
+    return value != nullptr && string(value) == "1";
+}
+
 struct AugmentedDagGpuProfile {
     bool enabled = false;
     cudaEvent_t start{}, end{};
@@ -89,6 +109,7 @@ struct AugmentedDagGpuProfile {
     double ripup_seconds = 0.0;
     double update_cost_seconds = 0.0;
     double presum_seconds = 0.0;
+    double flt_precompute_seconds = 0.0;
     double bottom_up_seconds = 0.0;
     double traceback_seconds = 0.0;
     double commit_seconds = 0.0;
@@ -139,17 +160,21 @@ void stop_augmented_dag_gpu_timer(double &seconds) {
 void print_augmented_dag_gpu_profile() {
     if(!augmented_dag_gpu_profile.enabled) return;
     const double total = augmented_dag_gpu_profile.remove_and_cost_seconds +
+                         augmented_dag_gpu_profile.flt_precompute_seconds +
                          augmented_dag_gpu_profile.bottom_up_seconds +
                          augmented_dag_gpu_profile.traceback_seconds +
                          augmented_dag_gpu_profile.commit_seconds;
     const auto pct = [&] (double seconds) { return total > 0 ? 100.0 * seconds / total : 0.0; };
     printf("Stage 2 augmented-DAG GPU profile (profile run): remove+cost=%.3fs (%.1f%%), "
+           "flt-precompute=%.3fs (%.1f%%), "
            "bottom-up=%.3fs (%.1f%%), traceback=%.3fs (%.1f%%), "
            "commit=%.3fs (%.1f%%), total=%.3fs, level-node-visits=%lld\n"
            "                    remove+cost split: ripup-commit=%.3fs (%.1f%%), "
            "update_cost=%.3fs (%.1f%%), compute_presum=%.3fs (%.1f%%)\n",
            augmented_dag_gpu_profile.remove_and_cost_seconds,
            pct(augmented_dag_gpu_profile.remove_and_cost_seconds),
+           augmented_dag_gpu_profile.flt_precompute_seconds,
+           pct(augmented_dag_gpu_profile.flt_precompute_seconds),
            augmented_dag_gpu_profile.bottom_up_seconds,
            pct(augmented_dag_gpu_profile.bottom_up_seconds),
            augmented_dag_gpu_profile.traceback_seconds,
@@ -300,6 +325,127 @@ __global__ void init_costs(int limit) {
     costs[index] = INF;
 }
 
+// FLT (journal Sec. V).  A DAG edge is axis-aligned, so a wire along it can
+// only sit on a layer whose preferred direction matches.  Both endpoints of an
+// FLT connection run along the same edge, so the starting and the arrival layer
+// pass the same test.  Keeping the predicate in one place is what lets the
+// precompute, the DP and the traceback agree on which pairs exist.
+__device__ inline bool flt_layer_fits_edge(int layer, int nx, int ny, int px, int py) {
+    if((layer & 1 ^ DIR) == 1 && ny != py) return false;
+    if((layer & 1 ^ DIR) == 0 && nx != px) return false;
+    return true;
+}
+
+// FLT: a_l of journal Fig. 10(b) — the cheapest way for this node to reach its
+// parent arriving on layer `arrive_layer`, minimized over the layer the node
+// itself leaves on.  Returns that starting layer through `start_layer`.  The
+// traceback replays this call to recover the layer the node sits on, so the two
+// must read the same arrays; neither costs[] nor cost_edges[] changes between
+// the bottom-up pass and the traceback of a batch.
+__device__ double flt_best_incoming_cost(const double *edge_costs, int node_idx, int arrive_layer,
+                                         int nx, int ny, int px, int py, int *start_layer) {
+    // Above any reachable cost: costs[] and cost_edges[] are both capped at INF,
+    // so a pair is worth at most 2 * INF and the first legal start always wins.
+    double best = 4 * INF;
+    int best_start = arrive_layer;
+    for(int start = MIN_ROUTE_LAYER; start < MAX_LAYER; start++) {
+        if(!flt_layer_fits_edge(start, nx, ny, px, py)) continue;
+        const double cost = costs[node_idx * MAX_LAYER + start] +
+                            edge_costs[(start - 1) * FLT_LAYERS + (arrive_layer - 1)];
+        if(cost < best) {
+            best = cost;
+            best_start = start;
+        }
+    }
+    *start_layer = best_start;
+    return best;
+}
+
+// FLT edge precompute — journal Algorithm 3.  One thread per (DAG edge,
+// arrival layer) fills that arrival layer's column of the edge's lookup table:
+// for every starting layer it walks the candidate change points once and keeps
+// the cheapest.  Grid costs move with every batch, so this runs after the
+// batch's cost refresh and before the bottom-up DP reads the table.
+__global__ void flt_edge_precompute(int node_total) {
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int node_idx = tid / MAX_LAYER;
+    if(node_idx >= node_total) return;
+    // Every column of the table needs resetting, so the bound here is the table
+    // width rather than the routable layer count.
+    const int arrive_layer = tid % MAX_LAYER;
+    if(arrive_layer < MIN_ROUTE_LAYER || arrive_layer > FLT_LAYERS) return;
+    const int nx = nodes[node_idx] / Y % X, ny = nodes[node_idx] % Y;
+
+    for(int par_id = par_num_sum[node_idx]; par_id < par_num_sum[node_idx + 1]; par_id++) {
+        double *edge_costs = cost_edges + (long long) par_id * FLT_LAYER_PAIRS;
+        int *change_points = best_change + (long long) par_id * FLT_LAYER_PAIRS;
+        // The table is reused across batches, so every entry this thread owns
+        // has to be reset even when the pair turns out to be illegal.
+        for(int start = 0; start < FLT_LAYERS; start++) {
+            edge_costs[start * FLT_LAYERS + arrive_layer - 1] = INF;
+            change_points[start * FLT_LAYERS + arrive_layer - 1] = -1;
+        }
+        const int par_idx = par_nodes[par_id];
+        const int px = nodes[par_idx] / Y % X, py = nodes[par_idx] % Y;
+        if(arrive_layer > L || !flt_layer_fits_edge(arrive_layer, nx, ny, px, py)) continue;
+        // The diagonal is the plain single-layer wire the pre-FLT DP used, and
+        // is written as that one expression so a run that never picks a layer
+        // change reproduces the pre-FLT solution exactly.
+        edge_costs[(arrive_layer - 1) * FLT_LAYERS + arrive_layer - 1] =
+            graph::wire_segment_cost(arrive_layer - 1, min(nx, px), max(nx, px), min(ny, py), max(ny, py));
+
+        const bool along_x = ny == py && nx != px;
+        const int from = along_x ? nx : ny, to = along_x ? px : py;
+        const int span = abs(to - from);
+        // A change point has to be interior: putting it on an endpoint would
+        // duplicate the via stack that node already emits for itself.
+        if(span < 2) continue;
+        const int step = max(span / FLT_MAX_POINTS, 1), advance = to > from ? 1 : -1;
+        // Only layers of the arrival layer's parity can carry this edge, so a
+        // change stacks vias two layers at a time and the stack cost grows by a
+        // fixed pair of terms per step.  Walking the points outermost lets one
+        // pass over a point serve every starting layer, which is what keeps the
+        // via lookups from being repeated per layer pair.
+        double best[FLT_LAYERS + 1];
+        int best_point[FLT_LAYERS + 1];
+        for(int start = MIN_ROUTE_LAYER; start <= FLT_LAYERS; start++) {
+            best[start] = INF;
+            best_point[start] = -1;
+        }
+        for(int offset = step; offset < span; offset += step) {
+            const int c = from + advance * offset;
+            const int cx = along_x ? c : nx, cy = along_x ? ny : c;
+            const double arrival_wire =
+                graph::wire_segment_cost(arrive_layer - 1, min(cx, px), max(cx, px), min(cy, py), max(cy, py));
+            double via = 0;
+            for(int start = arrive_layer + 2; start <= L; start += 2) {
+                via += vcost[IDX(start - 3, cx, cy)] + vcost[IDX(start - 2, cx, cy)];
+                const double cost = graph::wire_segment_cost(start - 1, min(nx, cx), max(nx, cx), min(ny, cy), max(ny, cy)) +
+                                    arrival_wire + via;
+                if(cost < best[start]) {
+                    best[start] = cost;
+                    best_point[start] = c;
+                }
+            }
+            via = 0;
+            for(int start = arrive_layer - 2; start >= MIN_ROUTE_LAYER; start -= 2) {
+                via += vcost[IDX(start - 1, cx, cy)] + vcost[IDX(start, cx, cy)];
+                const double cost = graph::wire_segment_cost(start - 1, min(nx, cx), max(nx, cx), min(ny, cy), max(ny, cy)) +
+                                    arrival_wire + via;
+                if(cost < best[start]) {
+                    best[start] = cost;
+                    best_point[start] = c;
+                }
+            }
+        }
+        for(int start = arrive_layer & 1 ? 1 : 2; start <= L; start += 2) {
+            if(start == arrive_layer) continue;
+            edge_costs[(start - 1) * FLT_LAYERS + arrive_layer - 1] = best[start];
+            change_points[(start - 1) * FLT_LAYERS + arrive_layer - 1] = best_point[start];
+        }
+    }
+}
+
 __global__ void Lshape_route_node_cuda(int shift, int end_shift) {
     int node_sequence = blockIdx.x * blockDim.x + threadIdx.x + shift;
     if(node_sequence>=end_shift)
@@ -378,7 +524,11 @@ __global__ void Lshape_route_node_cuda(int shift, int end_shift) {
             if((layer & 1 ^ DIR) == 1 && node_y != py) continue;
             if((layer & 1 ^ DIR) == 0 && node_x != px) continue;
             int index_ = child_index_of_current_node * MAX_LAYER + layer;
-            double cost = costs[node_idx * MAX_LAYER + layer] + graph::wire_segment_cost(layer-1, min(node_x, px), max(node_x, px), min(node_y, py), max(node_y, py));
+            int start_layer;
+            double cost = flt_on
+                ? flt_best_incoming_cost(cost_edges + (long long) (par_num_sum[node_idx] + par_id) * FLT_LAYER_PAIRS,
+                                         node_idx, layer, node_x, node_y, px, py, &start_layer)
+                : costs[node_idx * MAX_LAYER + layer] + graph::wire_segment_cost(layer-1, min(node_x, px), max(node_x, px), min(node_y, py), max(node_y, py));
             int shift_modify = child_num_sum[parent_IDX] * MAX_LAYER + index_;
             atomicMinDouble(&parent_childCosts[index_], cost);
             if(parent_childCosts[index_]==cost)
@@ -387,6 +537,17 @@ __global__ void Lshape_route_node_cuda(int shift, int end_shift) {
             }
         }
     }
+}
+
+// Records one axis-aligned wire segment: the unit demand the batch's presum
+// pass consumes, plus the route entry the output writer and the rip-up path
+// replay.  FLT splits an edge into two such segments, so both orientations the
+// traceback used to spell out inline now go through here.
+__device__ inline void emit_wire_segment(int *net_routes, int layer, int x0, int y0, int x1, int y1, int stamp) {
+    graph::atomic_add_unit_demand_wire_segment(layer, min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1), stamp);
+    int idd = atomicAdd(net_routes, 2);
+    net_routes[idd] = IDX(layer, min(x0, x1), min(y0, y1));
+    net_routes[idd + 1] = IDX(layer, max(x0, x1), max(y0, y1));
 }
 
 __global__ void get_routing_tree_cuda(int shift, int end_shift, int depth, int stamp) {
@@ -434,22 +595,46 @@ __global__ void get_routing_tree_cuda(int shift, int end_shift, int depth, int s
                 int child_idx = path / MAX_LAYER;
                 if(child_idx == node_id)
                 {
-                    layer_output[node_id] = path % MAX_LAYER;
                     int px = nodes[par_idx] / Y % X, py = nodes[par_idx] % Y;
-                    assert(px==cur_x||py==cur_y); 
-                    if(px==cur_x && cur_y!=py)
+                    assert(px==cur_x||py==cur_y);
+                    // Without FLT the wire runs on one layer, so the layer the
+                    // node sits on and the layer it arrives at the parent on are
+                    // the same.  FLT lets them differ; replaying the DP's
+                    // minimization recovers which start layer it settled on.
+                    const int arrive_layer = path % MAX_LAYER;
+                    int start_layer = arrive_layer, change_point = -1;
+                    if(flt_on)
                     {
-                        graph::atomic_add_unit_demand_wire_segment(layer_output[node_id] - 1, px, px, min(py,cur_y), max(py,cur_y), stamp);
-                        int idd1 = atomicAdd(net_routes,2);
-                        net_routes[idd1] = IDX(layer_output[node_id] - 1, px, min(py,cur_y));
-                        net_routes[idd1+1] = IDX(layer_output[node_id] - 1, px, max(py,cur_y));
+                        const long long edge_id = par_num_sum[node_id] + par_sequence;
+                        flt_best_incoming_cost(cost_edges + edge_id * FLT_LAYER_PAIRS, node_id, arrive_layer,
+                                               cur_x, cur_y, px, py, &start_layer);
+                        if(start_layer != arrive_layer)
+                        {
+                            change_point = best_change[edge_id * FLT_LAYER_PAIRS + (start_layer - 1) * FLT_LAYERS + arrive_layer - 1];
+                            // A layer change only beats the diagonal when that
+                            // pair got a finite cost, which means the precompute
+                            // did find an interior point for it.
+                            assert(change_point >= 0);
+                        }
                     }
-                    else if(py==cur_y && cur_x != px)
+                    layer_output[node_id] = start_layer;
+                    if(px != cur_x || py != cur_y)
                     {
-                        graph::atomic_add_unit_demand_wire_segment(layer_output[node_id] - 1, min(px,cur_x), max(px,cur_x), py, py, stamp);
-                        int idd1 = atomicAdd(net_routes,2);
-                        net_routes[idd1] = IDX(layer_output[node_id] - 1, min(px,cur_x), py);
-                        net_routes[idd1+1] = IDX(layer_output[node_id] - 1, max(px,cur_x), py);
+                        if(change_point < 0)
+                            emit_wire_segment(net_routes, start_layer - 1, cur_x, cur_y, px, py, stamp);
+                        else
+                        {
+                            const bool along_x = py == cur_y;
+                            const int cx = along_x ? change_point : cur_x, cy = along_x ? cur_y : change_point;
+                            emit_wire_segment(net_routes, start_layer - 1, cur_x, cur_y, cx, cy, stamp);
+                            emit_wire_segment(net_routes, arrive_layer - 1, cx, cy, px, py, stamp);
+                            // The via stack that joins the two segments.  Via
+                            // demand for it is committed from net_routes after
+                            // the traceback, like every other via.
+                            int idd1 = atomicAdd(net_routes,2);
+                            net_routes[idd1] = IDX(min(start_layer, arrive_layer) - 1, cx, cy);
+                            net_routes[idd1+1] = IDX(max(start_layer, arrive_layer) - 1, cx, cy);
+                        }
                     }
                     break;
                 }else{
@@ -496,6 +681,18 @@ __global__ void get_routing_tree_cuda(int shift, int end_shift, int depth, int s
     }
 }
 
+// How much of its ROUTE_PER_PIN budget the fullest net of a batch consumed.
+// The counter routes[..][0] keeps counting past the end of the buffer, so a
+// reading above 100% is what an overflow would look like.
+__global__ void measure_route_buffer_peak(int net_cnt) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if(i >= net_cnt) return;
+    const int net_id = net_ids[i];
+    const long long capacity = (long long) (pin_acc_num[net_id + 1] - pin_acc_num[net_id]) * ROUTE_PER_PIN;
+    const long long used = routes[pin_acc_num[net_id] * ROUTE_PER_PIN];
+    atomicMax(&route_buffer_peak_permille, (int) (1000 * used / capacity));
+}
+
 void process_net(int thread_idx, vector<int> &nets2route, int thread_num, std::atomic<int>& currentNetId) {
     while (true) {
         int netId = currentNetId.fetch_add(1);
@@ -526,6 +723,8 @@ void Lshape_route_detour_wrap(vector<int> &nets2route)
     {
         return;
     }
+    flt_on = flt_enabled();
+    assert(L <= FLT_LAYERS);
     if(LOG) printf("[%5.1f] Stage 2 rerouting: net ordering starts\n", elapsed_time());
     sort(nets2route.begin(), nets2route.end(), [](int l, int r)
          { return nets[l].hpwl > nets[r].hpwl; });
@@ -649,6 +848,9 @@ void Lshape_route_detour_wrap(vector<int> &nets2route)
     }
     print_stage2_depth_schedule();
     print_augmented_dag_gpu_profile();
+    if(flt_on && LOG)
+        printf("Stage 2 FLT: fullest net used %.1f%% of its route buffer (budget %llu ints per pin)\n",
+               route_buffer_peak_permille / 10.0, ROUTE_PER_PIN);
     runtime_stages.push_back({"  S2: host DAG prep + upload", stage2_host_prep_seconds});
     runtime_stages.push_back({"  S2: GPU route batches", stage2_gpu_route_seconds});
     if(augmented_dag_gpu_profile.enabled) {
@@ -854,6 +1056,17 @@ void Lshape_route_detour(vector<int> &nets2route) {
             accumulate_remove_and_cost_marks();
         else
             cudaDeviceSynchronize();
+        // FLT (journal Algorithm 3): the lookup table is built from the costs
+        // this batch just refreshed, so it has to be rebuilt here rather than
+        // once per program, and it has to land before the DP reads it.
+        if(flt_on)
+        {
+            NVTX_PUSH("S2/flt_precompute", FLT);
+            start_augmented_dag_gpu_timer();
+            flt_edge_precompute<<<BLOCK_NUM(node_total * MAX_LAYER), THREAD_NUM>>> (node_total);
+            stop_augmented_dag_gpu_timer(augmented_dag_gpu_profile.flt_precompute_seconds);
+            NVTX_POP();
+        }
         int cur_batch_depth = batch_depth_cnt_cpu[i+1] - batch_depth_cnt_cpu[i];
         NVTX_PUSH("S2/bottom_up_DP", BOTTOM_UP);
         start_augmented_dag_gpu_timer();
@@ -877,6 +1090,8 @@ void Lshape_route_detour(vector<int> &nets2route) {
         }
         stop_augmented_dag_gpu_timer(augmented_dag_gpu_profile.traceback_seconds);
         NVTX_POP();
+        if(flt_on)
+            measure_route_buffer_peak<<<BLOCK_NUM(batches[i].size()), THREAD_NUM>>> (batches[i].size());
         NVTX_PUSH("S2/commit", COMMIT);
         start_augmented_dag_gpu_timer();
         graph::batch_wire_update(global_timestamp);

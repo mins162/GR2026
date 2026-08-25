@@ -12,10 +12,11 @@
 | 1. Segment 기반 routing graph + point exhaustion overlap checking | §III-B/C | **이미 1.0에 포함** — `generate_batches_rsmt_cpu()`의 `has_conflict`가 point 검사, mark는 h/v segment (`src/database_cuda.hpp:286`) |
 | 2. GPU batch generation | §III-D | **완료** (2026-08-22, optimizations.md §4) — 단 논문의 배치별 commit-check 스케줄링은 실측 실패로 window/wavefront 구조로 대체, 우선순위 중재(atomicMin)는 논문대로 |
 | 3. Node-level parallelism (depth별 병렬 DP) | §IV | **이미 1.0에 포함** — S2의 level별 커널 체인이 바로 이것 (`src/Lshape_route_detour.hpp:860`) |
-| 4. **FLT (Flexible Layer Transition)** | §V | **미구현** — 코드에 layer-change-on-edge / edge precompute 흔적 없음 |
+| 4. **FLT (Flexible Layer Transition)** | §V | **완료** (2026-08-25, [2026-08-25-flt.md](2026-08-25-flt.md)) — `INSTANTGR_FLT=1` opt-in. `mempool_group` −0.256% / 런타임 +18.5% |
 | 5. 전체 라우터 (위 조합) | §VI | n/a |
 
-→ **남은 것은 사실상 FLT 하나.**
+→ **저널 기여 5개 모두 반영됨.** 아래 §FLT가 뭔가 이후는 구현 전 조사 기록이며,
+결과·실측과 예상이 어긋난 부분은 [2026-08-25-flt.md](2026-08-25-flt.md)에 정리했다.
 
 ## FLT가 뭔가
 

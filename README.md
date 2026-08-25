@@ -10,6 +10,7 @@
 | Augmented DAG depth | leaf peeling tree-center **기본 on** — S2 GPU −0.6~−1.7s, 순이득 | 완료 ([분석](docs/2026-08-24-s2-critical-path.md)) |
 | vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
 | GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
+| FLT (journal Sec. V) | score **−0.256%**, 런타임 **+15.7%** (`mempool_group`) | `INSTANTGR_FLT=1` opt-in ([결과](docs/2026-08-25-flt.md)) |
 
 - 전체 : `mempool_group` 62.38s → **31.36s (1.99×)**, `mempool_cluster_ranking` 225.28s → **119.93s (1.88×)**, ISPD score 변화 없음
 - 항목별 분해 : **[docs/2026-08-23-best-result.md](docs/2026-08-23-best-result.md)** · 측정 절차 : [docs/measure-runtime.md](docs/measure-runtime.md)

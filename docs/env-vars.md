@@ -41,6 +41,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 | 변수 | 값 | 설명 |
 | --- | --- | --- |
 | `INSTANTGR_GPU_TREE_CENTER` | `1` | GPU 측 근사 tree-center 루트 선택 — CPU tree-center가 우선하므로 `INSTANTGR_TREE_CENTER=0`과 함께 써야 함 |
+| `INSTANTGR_FLT` | `1` | Flexible Layer Transition (journal Sec. V) — Stage 2 DAG edge 도중 층 변경 1회 허용. 품질 ↔ 런타임 트레이드오프라 기본 off ([결과](2026-08-25-flt.md)) |
 
 ## 검증 / 프로파일링 (`1`로 켬, 느려짐)
 

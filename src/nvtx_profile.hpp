@@ -35,6 +35,7 @@ enum Color : uint32_t {
     RIPUP       = 0xffef5350,
     UPDATE_COST = 0xffffa726,
     PRESUM      = 0xffffee58,
+    FLT         = 0xffab47bc,
     BOTTOM_UP   = 0xff66bb6a,
     TRACEBACK   = 0xff26c6da,
     COMMIT      = 0xff7e57c2,
