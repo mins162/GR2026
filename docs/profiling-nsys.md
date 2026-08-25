@@ -5,7 +5,7 @@
 > - 논문 원본에서 이 두 구간이 **wall의 33%, GPU 작업의 69%**
 > - 오히려 기존 표는 Stage 1을 빼고 세어 **과소 보고**였음
 
-- 관련 : [optimizations.md](optimizations.md) 3번, [2026-08-23-best-result.md](2026-08-23-best-result.md)
+- 관련 : [optimizations.md](optimizations.md) 3번, [2026-08-23-best-result.md](archive/2026-08-23-best-result.md)
 - 브랜치 : `profile/nsys-vcost-presum`
 
 ---

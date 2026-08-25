@@ -1,6 +1,6 @@
 # InstantGR 최적화 정리
 
-- 최종 업데이트 : **2026-08-23**
+- 최종 업데이트 : **2026-08-25**
 - 기준 자료 : 2026-08-20 미팅 발표 (`0820 논문.pptx`, 슬라이드 21~33)
 - 대상 : ISPD 2024 global routing (InstantGR)
 - 벤치마크 : `mempool_group` (3.2M net), `mempool_cluster_ranking` (10.6M net)
@@ -11,6 +11,8 @@
 | 2 | Augmented DAG depth 개선 | **완료 — leaf peeling으로 순이득 전환, 기본 on** | 2026-08-24 |
 | 3 | vcost / presum 계산 절감 | **nsys 재측정 완료 — 기존 수치 확인됨** | 2026-08-23 |
 | 4 | GPU batch generation | `mempool_group` 전체 −11.9%, `mempool_cluster_ranking` −5.9% | 2026-08-22 |
+| 5 | wire demand commit 증분화 | **완료 — 전체 −17.6%(`mempool_group`) / −8.8%(`bsg_chip`)** | 2026-08-25 |
+| 6 | FLT (journal Sec. V) | **구현 완료, 미병합** — score −0.256%, 런타임 +11.9%(`mempool_group`) | 2026-08-25 |
 
 ---
 
@@ -76,7 +78,7 @@
 
 ### critical path 분석 (2026-08-24) <sub>결론 : 이득은 실재, host 비용이 상쇄</sub>
 
-- 방법·수치 전체 : **[2026-08-24-s2-critical-path.md](2026-08-24-s2-critical-path.md)**
+- 방법·수치 전체 : **[2026-08-24-s2-critical-path.md](archive/2026-08-24-s2-critical-path.md)**
 - depth 체인은 **Stage 2 전용** (S1은 batch당 커널 1개) — 직렬 phases = Σ batch max depth
 - tree-center는 phases를 **−23.6%(group) / −30.5%(cluster)** 줄이고 S2 GPU도 −0.56 / −1.11s 따라옴
   — 단 host BFS 1.19 / 3.88s(S1 몫은 단일 스레드 wall)가 상쇄해 전체 wall은 손해
@@ -215,7 +217,7 @@
 - 이를 제외한 호스트 1순위 : **DAG 구성 6.57s**, 다음 CPU FLUTE 4.94s, input 파싱 4.79s
 - DAG 구성은 세 스테이지에 분산되어 일괄 제거 곤란
 - CPU FLUTE 4.94s는 이미 overlap 중 → 추가 이득은 GPU FLUTE 커버리지 확대 필요 (현재 degree ≥ 10만 GPU)
-- **갱신 완료** : 4번 반영 후 재측정 결과는 [2026-08-23-best-result.md](2026-08-23-best-result.md)
+- **갱신 완료** : 4번 반영 후 재측정 결과는 [2026-08-23-best-result.md](archive/2026-08-23-best-result.md)
 
 ### 트레이스 검증은 필수
 
@@ -354,7 +356,7 @@
 
 - `retired 0`, `commits per net` 2.6 / 5.5, ring 748 슬롯
 - ISPD score 1,780,669,528 vs main 1,780,725,674 (노이즈)
-- 상세 : **[2026-08-22-opt.md](2026-08-22-opt.md)**
+- 상세 : **[2026-08-22-opt.md](archive/2026-08-22-opt.md)**
 
 ### 다음 작업
 
@@ -363,6 +365,50 @@
 - `INSTANTGR_GPU_BATCH_GEN_VALIDATE=1` 로 정합성 재확인 (`INSTANTGR_GPU_BATCH_GEN=0` 과 비교) — 아직 안 함
 - `retired`가 0이 아니면 ring이 부족한 것 → batch 수 증가 여부 확인 (`kRingBudgetBytes`)
 - `commits per net`이 10을 넘으면 wavefront 조절 규칙 재검토
+
+---
+
+## 5. wire demand commit 증분화 <sub>2026-08-25</sub>
+
+- 3번(vcost/presum)이 안 건드린 구간 : 배치가 새 route의 demand를 기록하는 `batch_wire_update`는
+  격자 커버리지와 무관하게 매번 L×X×Y 전체를 prefix-sum → commit → clear
+- 3번과 같은 골격 적용 : traceback이 실제로 쓴 셀의 track만 `pre_demand_track_dirty`로 마킹,
+  마킹 안 된 track은 (한 번도 안 써서 값이 항상 0이므로) 세 단계를 통째로 스킵
+- Stage 1·2 공용 경로라 절감이 양쪽에 다 반영 — 오히려 배치 수가 많은 Stage 1 쪽이 더 큼
+- 스위치 : `INSTANTGR_INCREMENTAL_COMMIT` (기본 on)
+
+### 결과 (RTX 3060, 같은 바이너리 스위치 토글)
+
+| 디자인 | off | on | 개선 |
+| --- | ---: | ---: | ---: |
+| `mempool_group` | 35.11 s | 28.94 s | **−17.6%** |
+| `bsg_chip` | 13.07 s | 11.92 s | **−8.8%** |
+
+- `mempool_group` S2 commit 버킷만 보면 4.65s → 1.01s (−78%)
+- score는 두 디자인 다 런간 노이즈 범위 안, open·incompleted 항상 0
+- 상세 : **[archive/2026-08-25-incremental-commit.md](archive/2026-08-25-incremental-commit.md)**
+
+---
+
+## 6. FLT (Flexible Layer Transition, journal Sec. V) <sub>2026-08-25</sub>
+
+- 저널 논문의 마지막 미구현 기여. DAG 두 노드를 잇는 wire가 한 층에서 시작·종료해야 하는 제약을
+  풀어, edge 도중 층 변경 1회를 허용 — 혼잡 구간을 층을 갈아타며 회피
+- `feat/journal-flt` 브랜치에 구현 완료, **main 미병합**. 스위치 `INSTANTGR_FLT` (기본 off — 아래처럼
+  품질과 런타임이 반대 방향이라, 지금까지의 최적화(전부 무손실)와 성격이 다름)
+
+### 결과 (`mempool_group`, 같은 바이너리 스위치 토글)
+
+| 항목 | off | on | 차이 |
+| --- | ---: | ---: | ---: |
+| score | 397,657,854 | 396,641,942 | **−0.256%** (overflow 감소, via +0.31%) |
+| 런타임 | 36.85 s | 41.23 s | **+11.9%** (최초 구현 +15.7%에서 precompute 재작성으로 단축) |
+
+- 논문은 이 벤치마크에서 −0.53%를 보고 — 우리는 그 절반 수준. 원인 미규명
+- 런타임 증가는 배치마다 새로 채우는 edge lookup table(Algorithm 3) 비용. DP의 O(L)→O(L²)
+  층 열거는 알고리즘 본질 비용이라 더 줄지 않음
+- 상세 : `feat/journal-flt` 브랜치의 `docs/2026-08-25-flt.md`, 격차 배경은
+  [archive/2026-08-25-journal-gap.md](archive/2026-08-25-journal-gap.md)
 
 ---
 
@@ -385,6 +431,8 @@
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-25 | 6번 FLT 구현 (`feat/journal-flt`, 미병합) — score −0.256% / 런타임 +11.9% |
+| 2026-08-25 | 5번 wire demand commit 증분화 — 전체 −17.6%(`mempool_group`) / −8.8%(`bsg_chip`) |
 | 2026-08-24 | 2번 critical path 분석 완료 — tree-center 이득 실재(host 비용에 상쇄), DP는 level 고정비 지배 |
 | 2026-08-24 | tree-center를 leaf peeling으로 재구현 — 두 디자인 모두 순이득, 기본 on 전환 |
 | 2026-08-23 | 3번을 nsys로 재측정 — 기존 수치 확인. 호스트가 wall의 70%임을 새로 확인 |

@@ -7,15 +7,15 @@
 | 최적화 | 결과 | 상태 |
 | --- | --- | --- |
 | FLUTE (GPU-FLUTE) | RSMT **−35~65%** | 완료 |
-| Augmented DAG depth | leaf peeling tree-center **기본 on** — S2 GPU −0.6~−1.7s, 순이득 | 완료 ([분석](docs/2026-08-24-s2-critical-path.md)) |
+| Augmented DAG depth | leaf peeling tree-center **기본 on** — S2 GPU −0.6~−1.7s, 순이득 | 완료 ([분석](docs/archive/2026-08-24-s2-critical-path.md)) |
 | vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
-| GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/2026-08-22-opt.md)) |
-| wire demand commit 증분화 | 전체 **−17.6%** (`mempool_group`), **−8.8%** (`bsg_chip`) | 완료 ([결과](docs/2026-08-25-incremental-commit.md)) |
+| GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/archive/2026-08-22-opt.md)) |
+| wire demand commit 증분화 | 전체 **−17.6%** (`mempool_group`), **−8.8%** (`bsg_chip`) | 완료 ([결과](docs/archive/2026-08-25-incremental-commit.md)) |
 
 - 전체 : `mempool_group` 62.38s → **31.36s (1.99×)**, `mempool_cluster_ranking` 225.28s → **119.93s (1.88×)**, ISPD score 변화 없음
-  (위 표는 commit 증분화 이전 수치 — 최신 수치는 [2026-08-25-incremental-commit.md](docs/2026-08-25-incremental-commit.md) 참고)
-- 항목별 분해 : **[docs/2026-08-23-best-result.md](docs/2026-08-23-best-result.md)** · 측정 절차 : [docs/measure-runtime.md](docs/measure-runtime.md)
-- 상세 : **[docs/optimizations.md](docs/optimizations.md)**, 최신 작업 : **[docs/2026-08-22-opt.md](docs/2026-08-22-opt.md)**
+  (위 표는 commit 증분화 이전 수치 — 최신 수치는 [2026-08-25-incremental-commit.md](docs/archive/2026-08-25-incremental-commit.md) 참고)
+- 항목별 분해 : **[docs/archive/2026-08-23-best-result.md](docs/archive/2026-08-23-best-result.md)** · 측정 절차 : [docs/measure-runtime.md](docs/measure-runtime.md)
+- 상세 : **[docs/optimizations.md](docs/optimizations.md)**, 지난 기록 : **[docs/archive/](docs/archive/)**
 
 ---
 
@@ -113,7 +113,7 @@ env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh
 
 - 환경 변수 전체 : [docs/env-vars.md](docs/env-vars.md)
 - runtime 측정 절차 (재사용) : [docs/measure-runtime.md](docs/measure-runtime.md)
-- 최신 결과 : [docs/2026-08-23-best-result.md](docs/2026-08-23-best-result.md)
+- 최신 결과 : [docs/archive/2026-08-23-best-result.md](docs/archive/2026-08-23-best-result.md)
 - nsys 프로파일링 (vcost/presum 검증) : [docs/profiling-nsys.md](docs/profiling-nsys.md)
 - 서버 전용 경로·명령 : [docs/my-setup.md](docs/my-setup.md)
 - 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf) (ICCAD), [InstantGR(Journal).pdf](docs/papers/InstantGR%28Journal%29.pdf) (TCAD, 확장판), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)

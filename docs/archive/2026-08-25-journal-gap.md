@@ -12,10 +12,26 @@
 | 1. Segment 기반 routing graph + point exhaustion overlap checking | §III-B/C | **이미 1.0에 포함** — `generate_batches_rsmt_cpu()`의 `has_conflict`가 point 검사, mark는 h/v segment (`src/database_cuda.hpp:286`) |
 | 2. GPU batch generation | §III-D | **완료** (2026-08-22, optimizations.md §4) — 단 논문의 배치별 commit-check 스케줄링은 실측 실패로 window/wavefront 구조로 대체, 우선순위 중재(atomicMin)는 논문대로 |
 | 3. Node-level parallelism (depth별 병렬 DP) | §IV | **이미 1.0에 포함** — S2의 level별 커널 체인이 바로 이것 (`src/Lshape_route_detour.hpp:860`) |
-| 4. **FLT (Flexible Layer Transition)** | §V | **미구현** — 코드에 layer-change-on-edge / edge precompute 흔적 없음 |
+| 4. **FLT (Flexible Layer Transition)** | §V | **구현 완료, 미병합** — `feat/journal-flt` 브랜치, `INSTANTGR_FLT=1` opt-in |
 | 5. 전체 라우터 (위 조합) | §VI | n/a |
 
-→ **남은 것은 사실상 FLT 하나.**
+→ **저널 기여 5개 모두 반영됨** (FLT는 별도 브랜치, main 미병합).
+
+## FLT 결과 요약 — 품질 ↔ 런타임 트레이드오프
+
+`mempool_group` 기준, 같은 바이너리에서 스위치만 토글 :
+
+| 항목 | off | on | 차이 |
+| --- | ---: | ---: | ---: |
+| score | 397,657,854 | 396,641,942 | **−0.256%** (overflow 감소가 전부, via +0.31%) |
+| 런타임 | 36.85 s | 41.23 s | **+11.9%** |
+
+- 개선분의 근원은 overflow — FLT가 혼잡 구간을 wire 도중 층을 갈아타며 회피
+- 논문은 이 벤치마크에서 −0.53%를 보고 — 우리 구현은 그 **절반 수준**. 원인 미규명
+- 런타임 증가는 배치마다 새로 채우는 edge lookup table(Algorithm 3) 비용. 최초 구현 +15.7%에서
+  precompute 커널 재작성으로 +11.9%까지 줄였으나 DP의 O(L)→O(L²) 열거는 알고리즘 본질 비용이라 못 줄임
+- 품질 대비 런타임이 손해라 다른 최적화(전부 품질 무변화+속도 개선)와 방향이 반대 → **기본 off**로 opt-in
+- 상세 : `feat/journal-flt` 브랜치의 `docs/2026-08-25-flt.md` (미병합이라 main에는 없음)
 
 ## FLT가 뭔가
 
@@ -30,29 +46,9 @@
      DP 자체가 이미 O(L²)라 복잡도 불변
 - 층 변경은 edge당 **최대 1회**로 제한 (via 수 억제)
 
-## 예상 효과와 비용 (논문 §VI, A800 기준)
-
-- 품질 : 1.0 → 2.0 개선 **0.7%** 의 대부분이 FLT 몫 (batch gen은 runtime 담당)
-- 우리 벤치마크의 Table III 대조 :
-
-| 벤치마크 (= 논문 BM#) | 1.0 score | 2.0 score | 차이 | 우리 현재 (evaluator) |
-| --- | ---: | ---: | ---: | ---: |
-| `mempool_group` (BM 4) | 397,658,013 | 395,530,319 | **−0.53%** | 397,652,351 ≈ 1.0 |
-| `mempool_cluster_ranking` (BM 12) | 1,780,897,390 | 1,771,528,815 | **−0.53%** | 1,780,854,733 ≈ 1.0 |
-
-  — 우리 score가 1.0과 자릿수 수준으로 일치 = 품질 개선분(−0.5%)이 통째로 남아 있음
-- runtime 비용 : case 13 기준 edge precompute가 **augmented routing의 22%, 전체의 7.1%**
-  - 단 2.0 전체로는 1.0 대비 오히려 1.56× 빨라짐 (GPU batch gen 등이 상쇄)
-  - 우리는 batch gen을 이미 흡수했으므로 FLT를 넣으면 **wall은 순증**할 것 — 품질 ↔ runtime 트레이드오프
-- via 영향 : FLT는 층 변경을 늘리므로 via 증가 방향 — 논문 Table IV에서 2.0이 via/WL/OF 모두 1.0보다 개선이긴 함
-
-## 구현 시 건드릴 곳 (예상)
-
-- Stage 2 DP 비용 모델 : `src/Lshape_route_detour.hpp` DP 커널 — incoming node 비용 집계에 `edgeCost` 조회 추가
-- edge precompute 커널 신설 + lookup table 메모리 (edge × L² — cluster grid에서 메모리 예산 확인 필요)
-- traceback / commit : 층 변경 지점이 경로에 추가되므로 wire·via demand 기록 경로 수정
-- 주의 : 3번 최적화(incremental vcost/presum)와의 상호작용 — edgeCost 재계산도 dirty 기반 증분으로 해야
-  precompute가 batch마다 full rebuild로 돌아가지 않음
+논문 §VI(A800 기준) 예상치와의 대조는 위 "FLT 결과 요약"에 반영 — 논문은 `mempool_group`에서
+−0.53% + case13 기준 edge precompute가 augmented routing의 22%를 보고, 우리 실측은 −0.256% /
+런타임 +11.9%(precompute가 S2 GPU의 21%)로 precompute 비중은 논문과 근접, 품질은 절반 수준.
 
 ## 참고 — 미구현은 아니지만 논문과 다른 부분
 

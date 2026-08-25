@@ -2,7 +2,7 @@
 
 - 환경 : `gpu-5`, TITAN RTX (`sm_75`), 연속 실행
 - 코드 : 현재 `main` (최적화 1·3·4 반영)
-- 측정 절차 : [measure-runtime.md](measure-runtime.md)
+- 측정 절차 : [measure-runtime.md](../measure-runtime.md)
 
 > - `mempool_group` : 62.38s → **31.36s (1.99×)**
 > - `mempool_cluster_ranking` : 225.28s → **119.93s (1.88×)**

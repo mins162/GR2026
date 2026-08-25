@@ -1,6 +1,6 @@
 # 2026-08-25 — wire demand commit의 dirty-track 증분화
 
-- 배경 : vcost/presum을 증분화([optimizations.md](optimizations.md))할 때 commit(`batch_wire_update`)은
+- 배경 : vcost/presum을 증분화([optimizations.md](../optimizations.md))할 때 commit(`batch_wire_update`)은
   그대로 뒀던 부분. FLT 런타임을 분석하다 이 버킷이 S2 GPU의 상당 몫(사용 GPU 기준 수 초)임을 재확인해 착수
 - 브랜치 : `opt/incremental-commit` (FLT와 독립 — `main`에서 분기, 건드리는 파일이 겹치지 않아 이후 자유롭게 병합 가능)
 - 스위치 : `INSTANTGR_INCREMENTAL_COMMIT` (**기본 on**)

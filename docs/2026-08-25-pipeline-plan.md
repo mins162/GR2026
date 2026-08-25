@@ -3,7 +3,7 @@
 - 상태 : **계획만. 아직 안 함.** 담당자 배정 예정
 - 배경 : 현재는 `generate_batches_rsmt()`가 전부 끝난 뒤 route 루프 시작 (완전 순차)
 - 아이디어 : 닫힌 batch를 순서대로 route에 흘려보내 gen과 route를 겹침
-- 관련 : [optimizations.md](optimizations.md) §4 (GPU batch gen 1~5차), [2026-08-25-journal-gap.md](2026-08-25-journal-gap.md)
+- 관련 : [optimizations.md](optimizations.md) §4 (GPU batch gen 1~5차), [2026-08-25-journal-gap.md](archive/2026-08-25-journal-gap.md)
 
 ## 핵심 판단 (2026-08-25 논의 결론)
 
