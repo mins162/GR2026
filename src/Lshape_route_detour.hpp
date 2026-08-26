@@ -536,8 +536,8 @@ void Lshape_route_detour_wrap(vector<int> &nets2route)
     cudaMemcpy(congestionView_cpu, congestion, X * Y * sizeof(bool), cudaMemcpyDeviceToHost);
     cudaMemcpy(congestionView_xsum_cpu, congestion_xsum, X * Y * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(congestionView_ysum_cpu, congestion_ysum, X * Y * sizeof(float), cudaMemcpyDeviceToHost);
-    if(LOG) printf("[%5.1f] Stage 2 rerouting: RSMT / augmented-DAG preprocessing starts\n", elapsed_time());
-    const double preprocessing_start_time = elapsed_time();
+    if(LOG) printf("[%5.1f] Stage 2 rerouting: detour generation starts\n", elapsed_time());
+    const double detour_gen_start_time = elapsed_time();
     const bool use_gpu_flute = gpu_flute_enabled();
     vector<int> gpu_flute_nets;
     for (int net_id : nets2route) {
@@ -551,8 +551,8 @@ void Lshape_route_detour_wrap(vector<int> &nets2route)
     cudb::reset_cpu_tree_center_profile();
     multithreaded_processing(nets2route);
     cudb::print_cpu_tree_center_profile("Stage 2");
-    record_runtime_stage("  S2: RSMT/DAG preprocessing", preprocessing_start_time);
-    if(LOG) printf("[%5.1f] Stage 2 rerouting: RSMT / augmented-DAG preprocessing ends\n", elapsed_time());
+    record_runtime_stage("  S2: detour generation", detour_gen_start_time);
+    if(LOG) printf("[%5.1f] Stage 2 rerouting: detour generation ends\n", elapsed_time());
     if(LOG) printf("[%5.1f] Stage 2 rerouting: batch generation starts\n", elapsed_time());
     const double batch_gen_start_time = elapsed_time();
     auto batches = generate_batches_rsmt(nets2route, 300000);

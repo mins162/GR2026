@@ -149,7 +149,7 @@ grep -E "^config:|^grid:|s +[0-9.]+ %|^total|#Batches|Generation" $REPO/results_
 | &nbsp;&nbsp;S1: DAG build (DFS) | | | |
 | &nbsp;&nbsp;S1: GPU route batches | | | |
 | **DAG/detour route (S2)** | | | |
-| &nbsp;&nbsp;S2: RSMT/DAG preprocessing | | | |
+| &nbsp;&nbsp;S2: detour generation | | | |
 | &nbsp;&nbsp;S2: batch generation | | | |
 | &nbsp;&nbsp;S2: host DAG prep + upload | | | |
 | &nbsp;&nbsp;S2: GPU route batches | | | |
@@ -173,9 +173,9 @@ grep -E "^config:|^grid:|s +[0-9.]+ %|^total|#Batches|Generation" $REPO/results_
 ## 주의
 
 - **연속 실행할 것**
-  - 공유 서버라 간격이 벌어지면 호스트 구간이 흔들림 (같은 입력에 S2 preprocessing 5.60s ↔ 19.19s, 3.4배 사례)
+  - 공유 서버라 간격이 벌어지면 호스트 구간이 흔들림 (같은 입력에 S2 detour generation 5.60s ↔ 19.19s, 3.4배 사례)
   - 두 런의 Stage 1 score가 자릿수까지 같으면 상태가 안정적이었다는 신호
-- **`S2: RSMT/DAG preprocessing`은 편차가 특히 큼** — 이 행의 증감은 1회 측정으로 판정 금지, 반복 측정 필요
+- **`S2: detour generation`은 편차가 특히 큼** — 이 행의 증감은 1회 측정으로 판정 금지, 반복 측정 필요
 - `nvidia-smi`로 GPU가 비었는지 확인 — 겹쳤으면 그 런은 폐기
 - **nsys wall clock을 성능 수치로 사용 금지**
   - `mempool_group`에서는 오버헤드가 노이즈 수준 (36.77 vs 37.04s)

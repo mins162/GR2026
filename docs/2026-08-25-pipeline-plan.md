@@ -55,7 +55,7 @@
 
 | 후보 | 구간 | 규모 (group/cluster) | 비고 |
 | --- | --- | --- | --- |
-| **S1 route ∥ S2 preprocessing** | S2 RSMT/DAG 재구성이 overlap 없음 (`src/Lshape_route_detour.hpp:541-550`, 8-23 확인) | ~1.8 / 7.1s | 닫기 정책 문제 없음 — **가장 안전한 첫 적용처** |
+| **S1 route ∥ S2 detour generation** | S2 detour generation이 overlap 없음 (`src/Lshape_route_detour.hpp:541-550`, 8-23 확인) | ~1.8 / 7.1s | 닫기 정책 문제 없음 — **가장 안전한 첫 적용처** |
 | input 파싱 ∥ CUDA DB build | 파싱 끝나야 build 시작 | 4.7+1.6 / 14.2+6.0s | net 단위 스트리밍 파싱 필요, 파서 구조 확인부터 |
 | S2 host DAG prep/upload ∥ 직전 batch route | batch별 host 준비를 미리 | 2.6 / 8.3s | 이미 일부 겹치는지 코드 확인 필요 |
 
@@ -68,4 +68,4 @@
 2. [ ] 실기 : 실험 1 gen 시간 측정 (group → cluster)
 3. [ ] nsys로 S1/S2 route 구간 GPU 유휴율 측정 (실험 2와 대안 공통 선행)
 4. [ ] 판정 기준에 따라 실험 2 또는 대안 진행
-5. [ ] (독립) S1 route ∥ S2 preprocessing 오버랩 — 위 표의 1순위, 병행 가능
+5. [ ] (독립) S1 route ∥ S2 detour generation 오버랩 — 위 표의 1순위, 병행 가능

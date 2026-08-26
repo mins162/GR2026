@@ -204,7 +204,7 @@
 | 구간 | 시간 | wall % | 현재 상태 |
 | --- | --- | --- | --- |
 | batch generation (S1 3.33 + S2 3.55) | 6.88s | 18.6% | **4번에서 해결됨** → 약 2.0s |
-| DAG 구성 (S1 DFS 1.75 + S2 preprocessing 2.09 + S2 host prep/upload 2.73) | 6.57s | 17.7% | 남음 |
+| DAG 구성 (S1 DFS 1.75 + S2 detour generation 2.09 + S2 host prep/upload 2.73) | 6.57s | 17.7% | 남음 |
 | CPU FLUTE, degree < 10 (overlapped) | 4.94s | 13.3% | 남음 |
 | input 파싱 | 4.79s | 12.9% | 남음 |
 | 출력 (finish nets + close output) | 2.13s | 5.8% | 남음 |
@@ -333,7 +333,7 @@
 - ISPD score 1,781,089,663 vs main 1,780,725,674 (+0.02%, 노이즈)
 - **주의**
   - 공유 서버 → 다른 사용자와 겹치면 호스트 구간이 크게 흔들림
-  - 실측 사례 : 같은 코드·같은 입력(Stage 1 결과 자릿수까지 동일)인데 S2 preprocessing이 5.60s ↔ 19.19s로 3.4배 차이
+  - 실측 사례 : 같은 코드·같은 입력(Stage 1 결과 자릿수까지 동일)인데 S2 detour generation이 5.60s ↔ 19.19s로 3.4배 차이
   - 비교는 반드시 **연속 실행**으로
 
 ### 5차 : 큰 디자인의 Stage 2
