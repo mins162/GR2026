@@ -3,7 +3,7 @@
 - 상태 : **계획만. 아직 안 함.** 담당자 배정 예정
 - 배경 : 현재는 `generate_batches_rsmt()`가 전부 끝난 뒤 route 루프 시작 (완전 순차)
 - 아이디어 : 닫힌 batch를 순서대로 route에 흘려보내 gen과 route를 겹침
-- 관련 : [optimizations.md](optimizations.md) §4 (GPU batch gen 1~5차), [2026-08-25-journal-gap.md](archive/2026-08-25-journal-gap.md)
+- 관련 : [optimizations.md](../optimizations.md) §4 (GPU batch gen 1~5차), [2026-08-25-journal-gap.md](2026-08-25-journal-gap.md)
 
 ## 핵심 판단 (2026-08-25 논의 결론)
 
@@ -56,7 +56,7 @@
 | 후보 | 구간 | 규모 (group/cluster) | 비고 |
 | --- | --- | --- | --- |
 | ~~S1 route ∥ S2 detour generation~~ | **불가 판정 (2026-08-26)** — `rsmt`는 clear되지 않아 S2 재구성 루프는 no-op. 실제 2s는 전부 `generate_detours`인데 입력(of_nets, congestion view)이 모두 S1-최종이라 파이프라인 지점이 없음. 투기(중간 congestion으로 선계산)만 가능하나 품질 리스크·재사용률 불확실 | ~1.8 / 7.1s | 원래 이름은 "S2 preprocessing"이었고, 그 라벨이 틀렸다는 것 자체가 철회 근거. "가장 안전" 판정은 RSMT 재구성이 실재한다는 전제였음 |
-| ~~input 파싱 ∥ CUDA DB build~~ | **완료 (2026-08-26)** — 스트리밍 파싱 불필요, net 쪼개기만 소비자 스레드로 | 순이득 0.9 / 1.7s | [archive/2026-08-26-input-net-split-pipeline.md](archive/2026-08-26-input-net-split-pipeline.md) |
+| ~~input 파싱 ∥ CUDA DB build~~ | **완료 (2026-08-26)** — 스트리밍 파싱 불필요, net 쪼개기만 소비자 스레드로 | 순이득 0.9 / 1.7s | [archive/2026-08-26-input-net-split-pipeline.md](2026-08-26-input-net-split-pipeline.md) |
 | **S2 host DAG prep/upload ∥ 직전 batch route** | batch별 host 준비를 미리 | 2.6 / 8.3s | **8-26 실측(group)** : CPU 작업 0.56s는 이미 직전 batch GPU tail(0.98s) 뒤에 숨어 있음. 남은 건 잔여 GPU 대기 0.44s + pageable 복사 0.35s(950MB, 2.7GB/s) — 더블 버퍼 + pinned + 별도 stream이면 상한 ~1.3s. **남은 후보 중 1순위** |
 
 - 공통 원칙 : 겹치는 두 쪽이 CPU↔GPU면 이득이 크고, GPU↔GPU면 유휴율부터 nsys로 확인할 것

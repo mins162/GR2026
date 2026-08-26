@@ -4,6 +4,8 @@
 - 기준 자료 : 2026-08-20 미팅 발표 (`0820 논문.pptx`, 슬라이드 21~33)
 - 대상 : ISPD 2024 global routing (InstantGR)
 - 벤치마크 : `mempool_group` (3.2M net), `mempool_cluster_ranking` (10.6M net)
+- **현행 A/B 기준값 : [rtx3060-ab.md](rtx3060-ab.md)** — RTX 3060에서 기여 6개를
+  격리 측정한 매트릭스(60런). 아래 본문의 절감 수치 중 이전 환경(TITAN RTX) 기준인 것은 그 문서가 대체한다
 
 | # | 항목 | 상태 | 갱신일 |
 | --- | --- | --- | --- |
@@ -38,10 +40,26 @@
 
 | 벤치마크 | upstream | +GPU-FLUTE | +FLUTE pipeline |
 | --- | --- | --- | --- |
-| `mempool_group` | 13.7s (CPU) | 7.27s (−47%) | 7.25s |
+| `mempool_group` | 13.7s (CPU) | 7.27s (−47%) | ~~7.25s~~ (§ 아래) |
 | `mempool_cluster_ranking` | 58.6s (CPU) | 38.09s (−35%) | 20.72s (−64.6%) |
 
 - 품질 : ISPD score 변화 없음 (노이즈 수준)
+
+### 정정 (2026-08-26) — `mempool_group` 오버랩 이득은 −0.02s가 아니다
+
+- 위 표의 `mempool_group` "+FLUTE pipeline" 7.25s(즉 −0.02s)는 **인용하지 말 것**
+- 이 표는 2026-08-20자로, **오버랩 전용 노브(`INSTANTGR_FLUTE_OVERLAP`)가 생기기 전**이다.
+  `INSTANTGR_GPU_FLUTE=0`은 GPU 경로를 통째로 지워 알고리즘 이득과 스케줄링 이득을 섞으므로 오버랩만 뗄 수 없었다
+- 전용 노브로 격리 측정한 값 (RTX 3060, `main` @ `667bc12`, 같은 바이너리 토글) :
+
+| 디자인 | serial (`FLUTE_OVERLAP=0`) | overlapped | S1 RSMT 차이 | 전체 wall 차이 |
+| --- | --- | --- | ---: | ---: |
+| `mempool_group` | GPU 2.12 + CPU 5.11 = 7.23s | 5.16s | **−2.07s** | **−1.90s** |
+| `bsg_chip` | GPU 1.15 + CPU 1.56 = 2.71s | 1.61s | **−1.10s** | **−1.01s** |
+
+- 로그의 `GPU wall=2.197s, tail beyond CPU loop=0.000s`(GPU가 CPU 루프 뒤로 완전히 숨음)와 일치한다.
+  모순으로 보이던 두 기록 중 **로그가 맞았다**
+- 측정 조건·전체 매트릭스 : **[rtx3060-ab.md](rtx3060-ab.md)** (§1 분해, §2 마진)
 
 ---
 
@@ -415,7 +433,7 @@
 
 ## 7. input 파싱 ∥ net 쪼개기 파이프라인 <sub>2026-08-26</sub>
 
-- [파이프라인 계획](2026-08-25-pipeline-plan.md) 후보 표 2번의 실현
+- [파이프라인 계획](archive/2026-08-25-pipeline-plan.md) 후보 표 2번의 실현
 - `build_cuda_database()`를 구간별로 재보니 겹칠 가치가 있는 건 net 쪼개기 루프(1.18s) 하나 —
   cap만으로 되는 grid 구축은 0.18s뿐이라 "cap 후 grid 먼저"는 무익
 - 스트리밍 파서 없이 해결 : 파서가 완성 net 개수를 atomic으로 publish,
@@ -454,6 +472,7 @@
 
 | 날짜 | 내용 |
 | --- | --- |
+| 2026-08-26 | RTX 3060 전체 A/B 매트릭스 (60런) — `mempool_group` 3.27×. 1번의 오버랩 이득을 −0.02s에서 **−1.90s**로 정정, 08-25 재측정과의 차이 규명 |
 | 2026-08-26 | 7번 input 파싱 ∥ net 쪼개기 파이프라인 — pre-route −0.9s(`mempool_group`) / −1.7s(`mempool_cluster_ranking`). cluster+GPU-FLUTE OOM(12GB) 확인 |
 | 2026-08-25 | 6번 FLT 구현 (`FLT` 브랜치, 미병합) — score −0.256% / 런타임 +11.9% |
 | 2026-08-25 | 5번 wire demand commit 증분화 — 전체 −17.6%(`mempool_group`) / −8.8%(`bsg_chip`) |

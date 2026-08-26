@@ -1,5 +1,6 @@
-# 2026-08-26 — 반도체설계 경진대회 준비 계획
+# 반도체설계 경진대회 준비 계획
 
+- 최종 갱신 : **2026-08-26**
 - 대회 : 2026 한국 대학생 반도체 설계 경진대회 ((사)반도체공학회)
 - **접수 마감 : 2026-09-18 (금) 14:00** — 참가신청서 + **연구결과 설계보고서** 동시 제출 (`secretary@theise.org`)
 - 이후 일정 : 예선 결과 10-02 → 본선 발표 10-09 → 최종 발표 10-23 → 시상식 11-26
@@ -99,7 +100,7 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 | 4-4 | tree-center / critical path (**negative result 포함**) | `archive/2026-08-24-s2-critical-path.md` | — |
 | 5. 결과 | 벤치마크 전체 표, 감소분 귀속, 품질 검증 | `archive/2026-08-23-best-result.md` | **V4, V2** |
 | 6. 검증 | evaluator, open nets 0, 호스트 시뮬레이션, `VALIDATE=1` | `optimizations.md` §4 검증 | — |
-| 7. 한계와 향후 | FLT 미구현, 호스트 70% 병목, 파이프라인 판단 | `archive/2026-08-25-journal-gap.md`, `2026-08-25-pipeline-plan.md` | — |
+| 7. 한계와 향후 | FLT 미구현, 호스트 70% 병목, 파이프라인 판단 | `archive/2026-08-25-journal-gap.md`, `archive/2026-08-25-pipeline-plan.md` | — |
 | 부록 | 재현 절차 | `measure-runtime.md`, `my-setup.md` | — |
 
 ---
@@ -156,7 +157,7 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 >
 > 우리는 두 경우를 **모두 구현·측정**한 뒤 하나를 채택하고 하나를 기각했다.
 
-- 근거 문서 : `2026-08-25-pipeline-plan.md` ("겹치는 두 쪽이 CPU↔GPU면 이득이 크고, GPU↔GPU면 유휴율부터 확인")
+- 근거 문서 : `archive/2026-08-25-pipeline-plan.md` ("겹치는 두 쪽이 CPU↔GPU면 이득이 크고, GPU↔GPU면 유휴율부터 확인")
 - 심사 관점 : "오버랩 했습니다"보다 **"오버랩이 언제 통하는지 알아냈습니다"**가 훨씬 강하다. 기각 판단이 같은 원리에서 나오면 §6이 자동으로 정당화된다
 
 ---

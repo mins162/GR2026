@@ -1,7 +1,7 @@
 # 2026-08-26 — input 파싱 ∥ net 쪼개기 파이프라인
 
 - 브랜치 : `pipeline-overlap`
-- 배경 : [2026-08-25-pipeline-plan.md](../2026-08-25-pipeline-plan.md) 후보 표 2번 (input 파싱 ∥ CUDA DB build)
+- 배경 : [2026-08-25-pipeline-plan.md](2026-08-25-pipeline-plan.md) 후보 표 2번 (input 파싱 ∥ CUDA DB build)
 - 환경 : intern 서버 (RTX 3060 12GB, `sm_86`), opt config 4개 전부 on
 
 ## 사전 측정 — 어디를 겹칠지
