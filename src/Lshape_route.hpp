@@ -187,23 +187,36 @@ void Lshape_route(vector<int> &nets2route) {
     // vector and therefore stays on this thread: the CPU stage covers the
     // overlapped region and the GPU stage only the tail beyond it.
     const double rsmt_start_time = elapsed_time();
+    const bool overlap_gpu_flute = flute_overlap_enabled();
     thread gpu_flute_thread;
     double gpu_flute_wall = 0;
     if(use_gpu_flute && !gpu_flute_nets.empty()) {
         if(LOG) {
+            const char *schedule = overlap_gpu_flute ? "launched overlapped" : "serial (overlap off)";
             if(gpu_flute_max_degree() == INT_MAX)
-                printf("[%5.1f] Stage 1 RSMT: GPU degree >= %d, nets=%zu, launched overlapped\n",
-                       elapsed_time(), gpu_min_degree, gpu_flute_nets.size());
+                printf("[%5.1f] Stage 1 RSMT: GPU degree >= %d, nets=%zu, %s\n",
+                       elapsed_time(), gpu_min_degree, gpu_flute_nets.size(), schedule);
             else
-                printf("[%5.1f] Stage 1 RSMT: GPU degree in [%d, %d], nets=%zu, launched overlapped\n",
+                printf("[%5.1f] Stage 1 RSMT: GPU degree in [%d, %d], nets=%zu, %s\n",
                        elapsed_time(), gpu_min_degree, gpu_flute_max_degree(),
-                       gpu_flute_nets.size());
+                       gpu_flute_nets.size(), schedule);
         }
-        gpu_flute_thread = thread([&gpu_flute_nets, &gpu_flute_wall, rsmt_start_time] {
+        if(overlap_gpu_flute) {
+            gpu_flute_thread = thread([&gpu_flute_nets, &gpu_flute_wall, rsmt_start_time] {
+                construct_rsmt_gpu(gpu_flute_nets);
+                gpu_flute_wall = elapsed_time() - rsmt_start_time;
+            });
+        } else {
             construct_rsmt_gpu(gpu_flute_nets);
             gpu_flute_wall = elapsed_time() - rsmt_start_time;
-        });
+            if(LOG) printf("[%5.1f] Stage 1 RSMT: GPU wall=%.3fs, serial before the CPU loop\n",
+                           elapsed_time(), gpu_flute_wall);
+            record_runtime_stage("  S1: RSMT, GPU FLUTE (serial)", rsmt_start_time);
+        }
     }
+    // With the overlap on this is the thread spawn away from rsmt_start_time;
+    // with it off it excludes the GPU batch that already ran above.
+    const double cpu_flute_start_time = elapsed_time();
     #pragma omp parallel for num_threads(8)
     for(int i = 0; i < nets2route.size(); i++) {
         // Keep the original CPU FLUTE implementation for root nets that fit
@@ -214,8 +227,10 @@ void Lshape_route(vector<int> &nets2route) {
     }
     if(LOG) printf("[%5.1f] Stage 1 RSMT: CPU degree < %d, nets=%d, wall=%.3fs\n",
                    elapsed_time(), gpu_min_degree, cpu_flute_net_count,
-                   elapsed_time() - rsmt_start_time);
-    record_runtime_stage("  S1: RSMT, CPU FLUTE (overlapped)", rsmt_start_time);
+                   elapsed_time() - cpu_flute_start_time);
+    record_runtime_stage(overlap_gpu_flute ? "  S1: RSMT, CPU FLUTE (overlapped)"
+                                           : "  S1: RSMT, CPU FLUTE (serial)",
+                         cpu_flute_start_time);
     if(gpu_flute_thread.joinable()) {
         const double gpu_join_start_time = elapsed_time();
         gpu_flute_thread.join();

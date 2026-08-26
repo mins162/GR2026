@@ -268,6 +268,16 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 ## 7. 열린 질문
 
 - [ ] 이 작업이 연구실 인턴 과제라면, 심사에서 **"본인 기여 범위"**를 물을 수 있음 → 커밋 이력으로 방어 가능한지 확인
-- [ ] ⚠ **CPU/GPU 오버랩의 `mempool_group` 이득 재측정 (제출 전 필수)** — `optimizations.md` §1 표는 오버랩 이득을 **−0.02s**(7.27 → 7.25s)로 기록하지만, 현재 로그는 `GPU wall=2.207s, tail beyond CPU loop=0.000s` 로 **GPU 2.2s가 완전히 숨었다**고 찍힌다. 두 수치가 모순 — §1 표가 2026-08-20자라 이후 코드/측정 상태가 달라진 것으로 보임. **모순인 채로 보고서에 넣으면 지도교수·심사위원이 잡는다.** 오버랩 on/off A/B로 확정할 것
+- [ ] ⚠ **CPU/GPU 오버랩의 `mempool_group` 이득 재측정 (제출 전 필수)** — `optimizations.md` §1 표는 오버랩 이득을 **−0.02s**(7.27 → 7.25s)로 기록하지만, 현재 로그는 `GPU wall=2.207s, tail beyond CPU loop=0.000s` 로 **GPU 2.2s가 완전히 숨었다**고 찍힌다. 두 수치가 모순 — §1 표가 2026-08-20자라 이후 코드/측정 상태가 달라진 것으로 보임. **모순인 채로 보고서에 넣으면 지도교수·심사위원이 잡는다.** `INSTANTGR_FLUTE_OVERLAP=0` A/B로 확정할 것 (아래)
+
+  ```
+  env INSTANTGR_FLUTE_OVERLAP=1 ./InstantGR.opt -cap $BENCH/mempool_group.cap -net $BENCH/mempool_group.net -out ab_ovl_on.out  |& tee ab_ovl_on.log
+  env INSTANTGR_FLUTE_OVERLAP=0 ./InstantGR.opt -cap $BENCH/mempool_group.cap -net $BENCH/mempool_group.net -out ab_ovl_off.out |& tee ab_ovl_off.log
+  ```
+
+  - 볼 곳 : `config:` 줄의 `flute-overlap=on/off`, `S1: RSMT` 소계, total
+  - `off`에서는 `S1: RSMT, GPU FLUTE (serial)` + `S1: RSMT, CPU FLUTE (serial)` 두 줄로 분리되어 **더해진다** — 이 합과 `on`의 CPU(overlapped) 값 차이가 곧 오버랩 이득
+  - **`INSTANTGR_GPU_FLUTE=0`은 이 측정에 쓸 수 없다** — GPU 경로를 통째로 지워서 알고리즘 이득과 오버랩 이득이 섞인다
+  - Stage 2 RSMT는 원래 오버랩이 없으므로 이 토글의 영향을 받지 않는다
 - [ ] `V2` 히트맵용 baseline/opt `.out` 페어를 **덮어쓰지 않고** 확보할 것
 - [ ] 발표(본선 10/09)는 예선 통과 후 대응 — 지금은 보고서에 집중

@@ -99,9 +99,9 @@ void runtime_breakdown() {
     else
         snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (max-degree=%d)",
                  cudb::gpu_flute_max_degree());
-    printf("\nconfig: gpu-flute=%s | wcost-presum-fusion=%s | incremental-vcost=%s (dirty limit %.0f%%) | "
+    printf("\nconfig: gpu-flute=%s | flute-overlap=%s | wcost-presum-fusion=%s | incremental-vcost=%s (dirty limit %.0f%%) | "
            "incremental-presum=%s | incremental-commit=%s | tree-center=%s\n",
-           gpu_flute_desc, fusion,
+           gpu_flute_desc, cudb::flute_overlap_enabled() ? "on" : "off", fusion,
            cudb::incremental_vcost_on ? "on" : "off",
            100.0 * cudb::dirty_cell_limit / ((double) cudb::L * cudb::X * cudb::Y),
            cudb::incremental_presum_on ? "on" : "off",
