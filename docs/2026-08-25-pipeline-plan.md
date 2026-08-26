@@ -55,9 +55,9 @@
 
 | 후보 | 구간 | 규모 (group/cluster) | 비고 |
 | --- | --- | --- | --- |
-| **S1 route ∥ S2 detour generation** | S2 detour generation이 overlap 없음 (`src/Lshape_route_detour.hpp:541-550`, 8-23 확인) | ~1.8 / 7.1s | 닫기 정책 문제 없음 — **가장 안전한 첫 적용처** |
-| input 파싱 ∥ CUDA DB build | 파싱 끝나야 build 시작 | 4.7+1.6 / 14.2+6.0s | net 단위 스트리밍 파싱 필요, 파서 구조 확인부터 |
-| S2 host DAG prep/upload ∥ 직전 batch route | batch별 host 준비를 미리 | 2.6 / 8.3s | 이미 일부 겹치는지 코드 확인 필요 |
+| ~~S1 route ∥ S2 detour generation~~ | **불가 판정 (2026-08-26)** — `rsmt`는 clear되지 않아 S2 재구성 루프는 no-op. 실제 2s는 전부 `generate_detours`인데 입력(of_nets, congestion view)이 모두 S1-최종이라 파이프라인 지점이 없음. 투기(중간 congestion으로 선계산)만 가능하나 품질 리스크·재사용률 불확실 | ~1.8 / 7.1s | 원래 이름은 "S2 preprocessing"이었고, 그 라벨이 틀렸다는 것 자체가 철회 근거. "가장 안전" 판정은 RSMT 재구성이 실재한다는 전제였음 |
+| ~~input 파싱 ∥ CUDA DB build~~ | **완료 (2026-08-26)** — 스트리밍 파싱 불필요, net 쪼개기만 소비자 스레드로 | 순이득 0.9 / 1.7s | [archive/2026-08-26-input-net-split-pipeline.md](archive/2026-08-26-input-net-split-pipeline.md) |
+| **S2 host DAG prep/upload ∥ 직전 batch route** | batch별 host 준비를 미리 | 2.6 / 8.3s | **8-26 실측(group)** : CPU 작업 0.56s는 이미 직전 batch GPU tail(0.98s) 뒤에 숨어 있음. 남은 건 잔여 GPU 대기 0.44s + pageable 복사 0.35s(950MB, 2.7GB/s) — 더블 버퍼 + pinned + 별도 stream이면 상한 ~1.3s. **남은 후보 중 1순위** |
 
 - 공통 원칙 : 겹치는 두 쪽이 CPU↔GPU면 이득이 크고, GPU↔GPU면 유휴율부터 nsys로 확인할 것
 - 호스트가 wall의 70%(8-23 확인)이므로 CPU↔GPU 페어를 우선
@@ -68,4 +68,5 @@
 2. [ ] 실기 : 실험 1 gen 시간 측정 (group → cluster)
 3. [ ] nsys로 S1/S2 route 구간 GPU 유휴율 측정 (실험 2와 대안 공통 선행)
 4. [ ] 판정 기준에 따라 실험 2 또는 대안 진행
-5. [ ] (독립) S1 route ∥ S2 detour generation 오버랩 — 위 표의 1순위, 병행 가능
+5. [ ] (독립) S2 host DAG prep/upload ∥ 직전 batch route 오버랩 — 위 표의 1순위, 병행 가능
+   - ~~S1 route ∥ S2 detour generation~~ 은 2026-08-26 불가 판정 (위 표 참고)

@@ -1574,6 +1574,111 @@ void net::generate_detours(bool *congestionView_cpu, float *congestionView_xsum_
 
 
 
+// The per-net subnet split below reads one finished db::nets entry at a time
+// and never looks at the grid, so it runs as a consumer thread next to the
+// single-threaded net-file parse instead of waiting for it.  db::read()
+// publishes its progress through db_parsed_net_count.  net_break_count and
+// max_pin_cnt are reported by build_cuda_database() after the consumer joins.
+int net_break_count = 0, max_pin_cnt = 1;
+
+void build_nets_from_parse() {
+    while(!db_cap_parsed.load(std::memory_order_acquire)) std::this_thread::yield();
+    L = db::L - 1;
+    X = db::X;
+    Y = db::Y;
+    XY = max(X, Y);
+
+    const int MAX_PIN_SIZE = 2000;
+    size_t consumed = 0, hpwl_done = 0;
+    while(true) {
+        // Read the finished flag first: if it is set, the count read after it
+        // is already the parser's final one.
+        const bool parse_done = db_parse_finished.load(std::memory_order_acquire);
+        const size_t available = db_parsed_net_count.load(std::memory_order_acquire);
+        if(consumed == available) {
+            if(parse_done) break;
+            // Sleep rather than yield: the consumer keeps up with the parser
+            // and would otherwise spend most of the parse in a sched_yield
+            // loop, slowing down the very thread it is waiting on.
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            continue;
+        }
+        for(int db_net_id = consumed; db_net_id < available; db_net_id++) {
+            auto &db_net = db::nets[db_net_id];
+            if(db_net.pins.size() == 1) continue;
+            max_pin_cnt = max(max_pin_cnt, (int) db_net.pins.size());
+            if(db_net.pins.size() <= MAX_PIN_SIZE) {
+
+                net new_net;
+                new_net.pins = db_net.pins;
+                new_net.original_net_id = db_net_id;
+                for(auto &p : new_net.pins) 
+                    if(p >= X * Y) p -= X * Y;
+                db_net.subnets.emplace_back(nets.size());
+                nets.emplace_back(move(new_net));
+                db_net.unfinished_subnet_count = db_net.subnets.size();
+                continue;
+            }
+            net_break_count++;
+            vector<int> pins = db_net.pins, sz(db_net.pins.size(), 1), par(db_net.pins.size());
+            vector<tuple<int, int, int>> edges;
+            edges.reserve(db_net.pins.size() * db_net.pins.size() / 2);
+
+            function<int(int)> find_par = [&] (int x) { return x == par[x] ? x : par[x] = find_par(par[x]); };
+
+            for(int i = 0; i < db_net.pins.size(); i++) {
+                par[i] = i;
+                if(pins[i] >= X * Y) pins[i] -= X * Y;
+                for(int j = 0; j < i; j++) {
+                    int x0 = db_net.pins[i] / Y % X, y0 = db_net.pins[i] % Y;
+                    int x1 = db_net.pins[j] / Y % X, y1 = db_net.pins[j] % Y;
+                    edges.emplace_back(make_tuple(j, i, abs(x0 - x1) + abs(y0 - y1)));
+                }
+            }
+            sort(edges.begin(), edges.end(), [&] (tuple<int, int, int> l, tuple<int, int, int> r) {
+                return get<2> (l) < get<2> (r);
+            });
+            for(auto e : edges) {
+                int u = find_par(get<0> (e)), v = find_par(get<1> (e));
+                if(u == v || sz[u] + sz[v] > MAX_PIN_SIZE) continue;
+                if(sz[u] > sz[v]) swap(u, v);
+                par[u] = v;
+                sz[v] += sz[u];
+            }
+            vector<vector<int>> new_pins(pins.size());
+            for(int i = 0; i < pins.size(); i++)
+                new_pins[find_par(i)].emplace_back(pins[i]);
+            for(auto e : edges) {
+                int u = get<0> (e), v = get<1> (e);
+                int par_u = find_par(u), par_v = find_par(v);
+                if(par_u == par_v) continue;
+                if(sz[par_u] > sz[par_v]) {
+                    swap(u, v);
+                    swap(par_u, par_v);
+                }
+                sz[par_u]++;
+                new_pins[par_u].emplace_back(pins[v]);
+                par[par_v] = par_u;
+                db_net.subnets.emplace_back(nets.size());
+                nets.emplace_back(net());
+                nets.back().pins = move(new_pins[par_v]);
+                nets.back().original_net_id = db_net_id;
+            }
+            for(int i = 0; i < pins.size(); i++) if(find_par(i) == i) {
+                db_net.subnets.emplace_back(nets.size());
+                nets.emplace_back(net());
+                nets.back().pins = move(new_pins[i]);
+                nets.back().original_net_id = db_net_id;
+            }
+            db_net.unfinished_subnet_count = db_net.subnets.size();
+        }
+        // Inside the loop, so the hpwl pass overlaps the parse too instead of
+        // becoming a serial tail once the parser is done.
+        for(; hpwl_done < nets.size(); hpwl_done++) nets[hpwl_done].calc_hpwl();
+        consumed = available;
+    }
+}
+
 void build_cuda_database() {
 
 
@@ -1583,90 +1688,9 @@ void build_cuda_database() {
     static float *temp_float = new float[MAX_LEN_DOUBLE];
 
     
-    L = db::L - 1;
-    X = db::X;
-    Y = db::Y;
-    XY = max(X, Y);
-    
-
-    nets.reserve(db::nets.size());
-
-    int MAX_PIN_SIZE = 2000;
-    int net_break_count = 0, max_pin_cnt = 1;
-    for(int db_net_id = 0; db_net_id < db::nets.size(); db_net_id++) {
-        auto &db_net = db::nets[db_net_id];
-        if(db_net.pins.size() == 1) continue;
-        max_pin_cnt = max(max_pin_cnt, (int) db_net.pins.size());
-        if(db_net.pins.size() <= MAX_PIN_SIZE) {
-
-            net new_net;
-            new_net.pins = db_net.pins;
-            new_net.original_net_id = db_net_id;
-            for(auto &p : new_net.pins) 
-                if(p >= X * Y) p -= X * Y;
-            db_net.subnets.emplace_back(nets.size());
-            nets.emplace_back(move(new_net));
-            db_net.unfinished_subnet_count = db_net.subnets.size();
-            continue;
-        }
-        net_break_count++;
-        vector<int> pins = db_net.pins, sz(db_net.pins.size(), 1), par(db_net.pins.size());
-        vector<tuple<int, int, int>> edges;
-        edges.reserve(db_net.pins.size() * db_net.pins.size() / 2);
-
-        function<int(int)> find_par = [&] (int x) { return x == par[x] ? x : par[x] = find_par(par[x]); };
-
-        for(int i = 0; i < db_net.pins.size(); i++) {
-            par[i] = i;
-            if(pins[i] >= X * Y) pins[i] -= X * Y;
-            for(int j = 0; j < i; j++) {
-                int x0 = db_net.pins[i] / Y % X, y0 = db_net.pins[i] % Y;
-                int x1 = db_net.pins[j] / Y % X, y1 = db_net.pins[j] % Y;
-                edges.emplace_back(make_tuple(j, i, abs(x0 - x1) + abs(y0 - y1)));
-            }
-        }
-        sort(edges.begin(), edges.end(), [&] (tuple<int, int, int> l, tuple<int, int, int> r) {
-            return get<2> (l) < get<2> (r);
-        });
-        for(auto e : edges) {
-            int u = find_par(get<0> (e)), v = find_par(get<1> (e));
-            if(u == v || sz[u] + sz[v] > MAX_PIN_SIZE) continue;
-            if(sz[u] > sz[v]) swap(u, v);
-            par[u] = v;
-            sz[v] += sz[u];
-        }
-        vector<vector<int>> new_pins(pins.size());
-        for(int i = 0; i < pins.size(); i++)
-            new_pins[find_par(i)].emplace_back(pins[i]);
-        for(auto e : edges) {
-            int u = get<0> (e), v = get<1> (e);
-            int par_u = find_par(u), par_v = find_par(v);
-            if(par_u == par_v) continue;
-            if(sz[par_u] > sz[par_v]) {
-                swap(u, v);
-                swap(par_u, par_v);
-            }
-            sz[par_u]++;
-            new_pins[par_u].emplace_back(pins[v]);
-            par[par_v] = par_u;
-            db_net.subnets.emplace_back(nets.size());
-            nets.emplace_back(net());
-            nets.back().pins = move(new_pins[par_v]);
-            nets.back().original_net_id = db_net_id;
-        }
-        for(int i = 0; i < pins.size(); i++) if(find_par(i) == i) {
-            db_net.subnets.emplace_back(nets.size());
-            nets.emplace_back(net());
-            nets.back().pins = move(new_pins[i]);
-            nets.back().original_net_id = db_net_id;
-        }
-        db_net.unfinished_subnet_count = db_net.subnets.size();
-    }
     pin_cnt_sum_cpu.resize(1 + nets.size(), 0);
-    for(int i = 0; i < nets.size(); i++) {
-        nets[i].calc_hpwl();
+    for(int i = 0; i < nets.size(); i++)
         pin_cnt_sum_cpu[i + 1] = pin_cnt_sum_cpu[i] + nets[i].pins.size();
-    }
     printf("    MAX PINS: %d\n", max_pin_cnt);
     printf("    Broken Nets: %d\n", net_break_count);
 

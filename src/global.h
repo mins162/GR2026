@@ -9,6 +9,8 @@
 #include <cassert>
 #include <iomanip>
 #include <thread>
+#include <atomic>
+#include <chrono>
 #include <bitset>
 #include <vector>
 #include <string>
@@ -29,6 +31,14 @@ queue<int> nets2output;
 char output_buffer[1000000000];
 FILE *out_file;
 double input_time, output_time, Lshape_time, DAG_time;
+
+// Handshake from the net-file parser to cudb::build_nets_from_parse(), which
+// consumes finished db::nets entries while the parse is still running.
+// db::nets is reserved up front, so entries below db_parsed_net_count never
+// move and the consumer can read them without locking.
+std::atomic<bool> db_cap_parsed{false};
+std::atomic<size_t> db_parsed_net_count{0};
+std::atomic<bool> db_parse_finished{false};
 
 struct RuntimeStage {
     string name;
