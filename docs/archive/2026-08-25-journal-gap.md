@@ -12,7 +12,7 @@
 | 1. Segment 기반 routing graph + point exhaustion overlap checking | §III-B/C | **이미 1.0에 포함** — `generate_batches_rsmt_cpu()`의 `has_conflict`가 point 검사, mark는 h/v segment (`src/database_cuda.hpp:286`) |
 | 2. GPU batch generation | §III-D | **완료** (2026-08-22, optimizations.md §4) — 단 논문의 배치별 commit-check 스케줄링은 실측 실패로 window/wavefront 구조로 대체, 우선순위 중재(atomicMin)는 논문대로 |
 | 3. Node-level parallelism (depth별 병렬 DP) | §IV | **이미 1.0에 포함** — S2의 level별 커널 체인이 바로 이것 (`src/Lshape_route_detour.hpp:860`) |
-| 4. **FLT (Flexible Layer Transition)** | §V | **구현 완료, 미병합** — `feat/journal-flt` 브랜치, `INSTANTGR_FLT=1` opt-in |
+| 4. **FLT (Flexible Layer Transition)** | §V | **구현 완료, 미병합** — `FLT` 브랜치, `INSTANTGR_FLT=1` opt-in |
 | 5. 전체 라우터 (위 조합) | §VI | n/a |
 
 → **저널 기여 5개 모두 반영됨** (FLT는 별도 브랜치, main 미병합).
@@ -31,7 +31,7 @@
 - 런타임 증가는 배치마다 새로 채우는 edge lookup table(Algorithm 3) 비용. 최초 구현 +15.7%에서
   precompute 커널 재작성으로 +11.9%까지 줄였으나 DP의 O(L)→O(L²) 열거는 알고리즘 본질 비용이라 못 줄임
 - 품질 대비 런타임이 손해라 다른 최적화(전부 품질 무변화+속도 개선)와 방향이 반대 → **기본 off**로 opt-in
-- 상세 : `feat/journal-flt` 브랜치의 `docs/2026-08-25-flt.md` (미병합이라 main에는 없음)
+- 상세 : `FLT` 브랜치의 `docs/2026-08-25-flt.md` (미병합이라 main에는 없음)
 
 ## FLT가 뭔가
 

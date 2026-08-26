@@ -84,5 +84,5 @@ assert하지 않는 경로가 있어서, 셀 단위 마킹으로 그 전제 자�
       확실히 하려면 추가할 것
 - [ ] 반복 측정 없이 각 1회 — 노이즈 범위 재확인 필요
 - [ ] `mempool_tile_rank` 미측정
-- [ ] `feat/journal-flt`와 병합 시 재측정 — FLT의 precompute·traceback도 이 track 상태를
+- [ ] `FLT` 브랜치와 병합 시 재측정 — FLT의 precompute·traceback도 이 track 상태를
       건드리므로 조합 효과 확인 필요

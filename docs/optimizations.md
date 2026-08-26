@@ -395,7 +395,7 @@
 
 - 저널 논문의 마지막 미구현 기여. DAG 두 노드를 잇는 wire가 한 층에서 시작·종료해야 하는 제약을
   풀어, edge 도중 층 변경 1회를 허용 — 혼잡 구간을 층을 갈아타며 회피
-- `feat/journal-flt` 브랜치에 구현 완료, **main 미병합**. 스위치 `INSTANTGR_FLT` (기본 off — 아래처럼
+- `FLT` 브랜치에 구현 완료, **main 미병합**. 스위치 `INSTANTGR_FLT` (기본 off — 아래처럼
   품질과 런타임이 반대 방향이라, 지금까지의 최적화(전부 무손실)와 성격이 다름)
 
 ### 결과 (`mempool_group`, 같은 바이너리 스위치 토글)
@@ -408,7 +408,7 @@
 - 논문은 이 벤치마크에서 −0.53%를 보고 — 우리는 그 절반 수준. 원인 미규명
 - 런타임 증가는 배치마다 새로 채우는 edge lookup table(Algorithm 3) 비용. DP의 O(L)→O(L²)
   층 열거는 알고리즘 본질 비용이라 더 줄지 않음
-- 상세 : `feat/journal-flt` 브랜치의 `docs/2026-08-25-flt.md`, 격차 배경은
+- 상세 : `FLT` 브랜치의 `docs/2026-08-25-flt.md`, 격차 배경은
   [archive/2026-08-25-journal-gap.md](archive/2026-08-25-journal-gap.md)
 
 ---
@@ -455,7 +455,7 @@
 | 날짜 | 내용 |
 | --- | --- |
 | 2026-08-26 | 7번 input 파싱 ∥ net 쪼개기 파이프라인 — pre-route −0.9s(`mempool_group`) / −1.7s(`mempool_cluster_ranking`). cluster+GPU-FLUTE OOM(12GB) 확인 |
-| 2026-08-25 | 6번 FLT 구현 (`feat/journal-flt`, 미병합) — score −0.256% / 런타임 +11.9% |
+| 2026-08-25 | 6번 FLT 구현 (`FLT` 브랜치, 미병합) — score −0.256% / 런타임 +11.9% |
 | 2026-08-25 | 5번 wire demand commit 증분화 — 전체 −17.6%(`mempool_group`) / −8.8%(`bsg_chip`) |
 | 2026-08-24 | 2번 critical path 분석 완료 — tree-center 이득 실재(host 비용에 상쇄), DP는 level 고정비 지배 |
 | 2026-08-24 | tree-center를 leaf peeling으로 재구현 — 두 디자인 모두 순이득, 기본 on 전환 |
