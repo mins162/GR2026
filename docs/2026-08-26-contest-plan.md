@@ -16,7 +16,12 @@
 
 근거 :
 
-- 현재 결과 : `mempool_group` 62.38s → **31.36s (1.99×)**, `mempool_cluster_ranking` 225.28s → **119.93s (1.88×)**, **품질 변화 0** (evaluator −0.002%)
+- 현재 결과 (**intern 서버 / RTX 3060, `archive/2026-08-25-rtx3060-remeasure.md`**) :
+  - `mempool_group` 94.52s → **35.26s (2.68×)** — 보고서 헤드라인은 **이 숫자**
+  - `bsg_chip` 25.03s → **13.12s (1.91×)**
+  - `mempool_cluster_ranking` — **opt 실행 불가 (GPU-FLUTE scratch OOM, 3060은 12GB)**. base만 927.45s
+  - 품질 : evaluator −0.0013% / −0.035%, 전 런 open 0 · incompleted 0
+- 이전 환경 (gpu-5 / TITAN RTX 24GB) : group **1.99×**, cluster **1.88×** — 기여별 분해 수치는 아직 전부 이 환경 기준
 - 31.4s를 29s로 더 줄여도 심사 점수는 안 오른다. 반면 라우팅 이미지 한 장은 확실히 오른다.
 - 지금 `docs/`는 **표 15개, 그림 0개**. 학부 심사에서 표만 있는 보고서는 안 읽힌다.
 
@@ -91,10 +96,10 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 | 4. 방법 4-1 | GPU-FLUTE + CPU/GPU 오버랩 | `optimizations.md` §1 | **V3** |
 | 4-2 | **incremental vcost/presum (우리 고유)** | `optimizations.md` §3 | **V6** |
 | 4-3 | **GPU batch generation 재설계** | `optimizations.md` §4 | **V5** |
-| 4-4 | tree-center / critical path (**negative result 포함**) | `2026-08-24-s2-critical-path.md` | — |
-| 5. 결과 | 벤치마크 전체 표, 감소분 귀속, 품질 검증 | `2026-08-23-best-result.md` | **V4, V2** |
+| 4-4 | tree-center / critical path (**negative result 포함**) | `archive/2026-08-24-s2-critical-path.md` | — |
+| 5. 결과 | 벤치마크 전체 표, 감소분 귀속, 품질 검증 | `archive/2026-08-23-best-result.md` | **V4, V2** |
 | 6. 검증 | evaluator, open nets 0, 호스트 시뮬레이션, `VALIDATE=1` | `optimizations.md` §4 검증 | — |
-| 7. 한계와 향후 | FLT 미구현, 호스트 70% 병목, 파이프라인 판단 | `2026-08-25-journal-gap.md`, `2026-08-25-pipeline-plan.md` | — |
+| 7. 한계와 향후 | FLT 미구현, 호스트 70% 병목, 파이프라인 판단 | `archive/2026-08-25-journal-gap.md`, `2026-08-25-pipeline-plan.md` | — |
 | 부록 | 재현 절차 | `measure-runtime.md`, `my-setup.md` | — |
 
 ---
@@ -130,7 +135,7 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 > 원리 : GPU 라우터의 병목은 병렬화 부족이 아니라 **"변경분 대비 재계산량의 비대칭"**이다.
 
 - 이 원리로 얻은 것이 전체 절감분의 **58%** (`update_cost` −99.1%, `compute_presum` −76.8%)
-- 이건 **저널 논문 기여 5개 어디에도 없는 우리 고유 아이디어**다 (`2026-08-25-journal-gap.md` 대조 완료)
+- 이건 **저널 논문 기여 5개 어디에도 없는 우리 고유 아이디어**다 (`archive/2026-08-25-journal-gap.md` 대조 완료)
 
 ### 3-4. 세 번째 서사 — 실패도 결과다
 
@@ -178,7 +183,7 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 
 ### 4-2. 우리 기여 — 큰 순서
 
-절감 크기(`2026-08-23-best-result.md` §3 귀속표)와 독창성을 함께 본 순위. **보고서 방법 절도 이 순서로 쓴다.**
+절감 크기(`archive/2026-08-23-best-result.md` §3 귀속표)와 독창성을 함께 본 순위. **보고서 방법 절도 이 순서로 쓴다.**
 
 | 순위 | 기여 | 절감 (group / cluster) | 독창성 | 근거 |
 | ---: | --- | ---: | :---: | --- |
@@ -268,6 +273,11 @@ x0 y0 l0 x1 y1 l1      ← wire segment 또는 via (l0 != l1)
 ## 7. 열린 질문
 
 - [ ] 이 작업이 연구실 인턴 과제라면, 심사에서 **"본인 기여 범위"**를 물을 수 있음 → 커밋 이력으로 방어 가능한지 확인
+- [ ] ⚠ **헤드라인 숫자를 어느 환경으로 낼지 확정** — 3060에서 group이 **2.68×**로 TITAN(1.99×)보다 크게 나왔다. 유리하지만 §4-2 기여별 분해(−18.16s 등)는 **전부 TITAN 기준**이라, 헤드라인만 3060으로 바꾸면 본문 합이 안 맞는다. 둘 중 하나 :
+  - (a) 3060으로 통일 — 기여별 A/B를 3060에서 다시 돌려야 함
+  - (b) TITAN으로 통일하고 3060은 "다른 하드웨어에서도 재현됨"으로 별도 절
+  - **(b)를 권함** — 재측정 부담 없고, 두 GPU에서 재현했다는 게 완성도 40%에 오히려 유리
+- [ ] ⚠ **`mempool_cluster_ranking` opt가 3060에서 OOM** — 가장 큰 디자인(10.6M net)을 최적화 버전으로 못 돌린다. 보고서에서 숨기지 말고 **한계로 명시**하거나, TITAN 결과를 병기할 것. 심사에서 "제일 큰 케이스는 왜 없냐"는 반드시 나온다
 - [ ] ⚠ **CPU/GPU 오버랩의 `mempool_group` 이득 재측정 (제출 전 필수)** — `optimizations.md` §1 표는 오버랩 이득을 **−0.02s**(7.27 → 7.25s)로 기록하지만, 현재 로그는 `GPU wall=2.207s, tail beyond CPU loop=0.000s` 로 **GPU 2.2s가 완전히 숨었다**고 찍힌다. 두 수치가 모순 — §1 표가 2026-08-20자라 이후 코드/측정 상태가 달라진 것으로 보임. **모순인 채로 보고서에 넣으면 지도교수·심사위원이 잡는다.** `INSTANTGR_FLUTE_OVERLAP=0` A/B로 확정할 것 (아래)
 
   ```
