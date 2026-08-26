@@ -108,6 +108,16 @@ bool gpu_flute_enabled() {
     return value == nullptr || string(value) != "0";
 }
 
+// A/B knob for the CPU/GPU overlap itself, separate from GPU-FLUTE: with 0 the
+// high-degree GPU batch runs to completion before the low-degree CPU loop
+// starts, so the two stage timers add up instead of hiding one another.
+// INSTANTGR_GPU_FLUTE=0 cannot measure this, since it removes the GPU path
+// along with the overlap.
+bool flute_overlap_enabled() {
+    const char *value = getenv("INSTANTGR_FLUTE_OVERLAP");
+    return value == nullptr || string(value) != "0";
+}
+
 // GPU receives nets whose pin degree is at least this value: the original
 // split, CPU degree <= DEGREE (9), GPU degree >= 10.
 constexpr int GPU_FLUTE_MIN_DEGREE = DEGREE + 1;
