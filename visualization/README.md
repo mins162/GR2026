@@ -18,6 +18,7 @@ cd visualization && python3 make_all.py
 | `plot_speedup.py` | 디자인별 속도 향상 배율 | 3장 결과 요약 |
 | `plot_base_vs_opt.py` | base / opt 실행 시간 나란히 | 3장 결과 요약 (위와 택일) |
 | `plot_ladder.py` | 누적 사다리 폭포 — 92.47 s → 28.28 s | 3장 결과 |
+| `plot_ladder_stacked.py` | 같은 내용을 막대 하나로, 기여별 색 분할 | 3장 결과 (위와 택일) |
 | `plot_contributions.py` | 기여별 leave-one-out 마진 (두 디자인) | 3장 기여별 서술 |
 | `plot_breakdown.py` | 단계별 시간 구성, base vs opt | 2장 구성 및 동작 |
 | `plot_breakdown_pie.py` | 단계별 구성 원형(도넛), opt만 | 2장 (위와 택일) |
