@@ -34,9 +34,9 @@ def use_style():
     plt.rcParams.update({
         "figure.dpi": 150,
         "savefig.dpi": 300,
-        "font.size": 8,
-        "axes.titlesize": 9,
-        "axes.labelsize": 8,
+        "font.size": 6.5,
+        "axes.titlesize": 7.5,
+        "axes.labelsize": 7,
         "axes.edgecolor": "#c3c2b7",
         "axes.linewidth": 0.6,
         "axes.grid": True,

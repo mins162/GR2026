@@ -20,6 +20,7 @@ cd visualization && python3 make_all.py
 | `plot_ladder.py` | 누적 사다리 폭포 — 92.47 s → 28.28 s | 3장 결과 |
 | `plot_contributions.py` | 기여별 leave-one-out 마진 (두 디자인) | 3장 기여별 서술 |
 | `plot_breakdown.py` | 단계별 시간 구성, base vs opt | 2장 구성 및 동작 |
+| `plot_breakdown_pie.py` | 단계별 구성 원형(도넛), opt만 | 2장 (위와 택일) |
 | `plot_overlap_timeline.py` | CPU/GPU 오버랩 타임라인 | 2장 GPU-FLUTE |
 | `data.py` | 위 전부의 입력 수치 | — |
 | `style.py` | 공통 스타일·색·저장 | — |
@@ -35,6 +36,7 @@ cd visualization && python3 make_all.py
 
 - 파랑 = 우리 기여, 회색 + **빗금** = ICCAD'22 논문 알고리즘
 - 빗금을 넣은 이유는 흑백 인쇄에서 색만으로는 구분이 안 되기 때문
+- 글자 크기는 그림 폭 대비로 맞춤. 전체 조정은 `style.py`의 `font.size`
 - 라벨은 전부 영문 — 한글 폰트 문제를 피하기 위함 ([../docs/visualization-tools.md](../docs/visualization-tools.md) 5)
 
 ## 아직 안 된 것
