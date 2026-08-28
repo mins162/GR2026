@@ -1,8 +1,8 @@
 """The same ladder as one bar: base height, cut into what each knob removed.
 
-Bottom block is what is left after everything is on; every block above it is one
-contribution's share of the 64.19 s that went away.  The hatched block is the
-one algorithm taken from the ICCAD'22 paper.
+Blocks run darkest at the top to lightest at the bottom, in the order the
+savings rank, so the eye lands on the biggest one first.  The remainder keeps a
+neutral colour of its own -- it is not a contribution, it is what is left.
 """
 import matplotlib.pyplot as plt
 
@@ -13,14 +13,16 @@ NAME = "ladder_stacked"
 
 # Bottom-up: the remainder first, then the ladder steps in reverse order, so the
 # bar reads in the same order the doc switches the knobs on when read downward.
+# Bottom-up.  Blue darkens with the size of the saving; the remainder at the
+# bottom is grey so it never reads as one more contribution.
 BLOCKS = [
-    ("opt (what is left)",          28.28, "#b4b2a9", None),
-    ("tree-center",                  0.55, "#b6dbf8", None),
-    ("GPU batch generation",         4.00, "#8ec4f2", None),
-    ("CPU/GPU overlap",              2.05, "#6aaeea", None),
-    ("GPU-FLUTE (ICCAD'22)",         5.95, "#8a8a8a", style.PAPER_HATCH),
-    ("incremental wire commit",      5.46, "#2a78d6", None),
-    ("incremental vcost/presum",    46.18, "#185fa5", None),
+    ("opt (what is left)",          28.28, "#5f5e5a"),
+    ("tree-center",                  0.55, "#cfe3f8"),
+    ("GPU batch generation",         4.00, "#a8cdf1"),
+    ("CPU/GPU overlap",              2.05, "#7fb3e8"),
+    ("GPU-FLUTE (ICCAD'22)",         5.95, "#5495dd"),
+    ("incremental wire commit",      5.46, "#2a78d6"),
+    ("incremental vcost/presum",    46.18, "#12558f"),
 ]
 BASE = 92.47
 
@@ -30,8 +32,8 @@ def build():
 
     bottom = 0.0
     anchors = []
-    for label, sec, color, hatch in BLOCKS:
-        ax.bar(0, sec, 0.52, bottom=bottom, color=color, hatch=hatch,
+    for label, sec, color in BLOCKS:
+        ax.bar(0, sec, 0.52, bottom=bottom, color=color,
                edgecolor="white", linewidth=0.7, zorder=3)
         # The remainder block is named by the bold caption under the bar, so it
         # does not get a leader label of its own.
