@@ -1,7 +1,7 @@
 # 시각화 도구 선정
 
 - 작성일 : **2026-08-29**
-- 목적 : [contest-plan.md](contest-plan.md) §1 그림 V1~V6를 무엇으로 그릴지 결정
+- 목적 : [contest-plan.md](contest-plan.md) §1 그림 후보 6종을 무엇으로 그릴지 결정
 - 결론 : **`matplotlib` + `SciencePlots`로 통일.** 필요할 때만 datashader 추가, 개념도만 손으로
 
 ---
@@ -58,24 +58,24 @@ plt.style.use(['science', 'ieee'])
 
 ---
 
-## 3. V1 · V2 전용
+## 3. 라우팅 오버뷰 · 혼잡도 히트맵 전용
 
-### `datashader` — V1 라우팅 오버뷰를 실제로 그릴 경우에만
+### `datashader` — 라우팅 결과 오버뷰를 실제로 그릴 경우에만
 
 - `mempool_group`은 **3.2M net**. matplotlib으로 그냥 그리면 렌더링이 안 끝나거나 검은 사각형이 됨 ([contest-plan.md](contest-plan.md) §1 주의)
 - datashader는 수백만 요소를 **픽셀 단위로 집계**해 렌더링 — 정확히 이 문제를 푸는 도구
-- 단, V1은 계획서에서 **△(자리 남으면)** 등급. 이 도구를 설치하는 시점 = V1을 하기로 확정한 시점
+- 단, 라우팅 오버뷰는 계획서에서 **△(자리 남으면)** 등급. 이 도구를 설치하는 시점 = 라우팅 오버뷰를 그리기로 확정한 시점
 
-### `matplotlib.imshow` / `pcolormesh` — V2 혼잡도 히트맵
+### `matplotlib.imshow` / `pcolormesh` — 혼잡도(overflow) 히트맵
 
 - 그리드 배열을 색으로 칠하는 것뿐이라 **별도 도구 불필요**
 - 데이터는 확보됨 : `ab_results_0826_143856/*.r1.out` (base/opt 페어, 2.2 GB)
 
 ---
 
-## 4. V5 개념도 — 코드로 그리지 말 것
+## 4. batch generation 재설계 도식 — 코드로 그리지 말 것
 
-batch generation 재설계 도식은 데이터 그래프가 아니라 개념도. 손으로 그리는 쪽이 빠르고 결과도 나음.
+이것은 데이터 그래프가 아니라 개념도. 손으로 그리는 쪽이 빠르고 결과도 나음.
 
 | 도구 | 느낌 | 용도 |
 | --- | --- | --- |
