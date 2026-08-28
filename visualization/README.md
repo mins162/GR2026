@@ -24,7 +24,9 @@ cd visualization && python3 make_all.py
 | `plot_breakdown.py` | 단계별 시간 구성, base vs opt | 2장 구성 및 동작 |
 | `plot_breakdown_pie.py` | 단계별 구성 원형(도넛), opt만 | 2장 (위와 택일) |
 | `plot_overlap_timeline.py` | CPU/GPU 오버랩 타임라인 | 2장 GPU-FLUTE |
-| `plot_routing.py` | 배선 크롭 (`mempool_tile_rank`, 30×30 GCell) | 3장 결과 — 라우팅 그림 |
+| `plot_routing.py` | 배선 크롭 + 밀도 히트맵 (`mempool_tile_rank`, 180×180 GCell) | 3장 결과 — 라우팅 그림 |
+| `plot_routing_layers.py` | 같은 크롭을 금속층별로 분리 (+ 배선 없는 밀도) | 3장 결과 (위와 택일) |
+| `plot_die_overview.py` | 다이 전체 밀도, 위 크롭 위치 표시 | 3장 결과 — 위 그림의 맥락 |
 | `data.py` | 위 전부의 입력 수치 (`plot_routing.py` 제외) | — |
 | `style.py` | 공통 스타일·색·저장 | — |
 
