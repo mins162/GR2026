@@ -1,6 +1,8 @@
 #include "graph.hpp"
 #include "nvtx_profile.hpp"
 
+void runtime_breakdown();  // main.cpp
+
 namespace cudb {
 struct net;
 bool cpu_tree_center_enabled();
@@ -169,14 +171,16 @@ void Lshape_route(vector<int> &nets2route) {
 
     if(LOG) printf("[%5.1f] Stage 1 initial routing: RSMT (CPU/GPU FLUTE) starts\n", elapsed_time());
     const bool use_gpu_flute = gpu_flute_enabled();
-    const int gpu_min_degree = GPU_FLUTE_MIN_DEGREE;
+    const int gpu_min_degree = gpu_flute_min_degree();
     vector<int> gpu_flute_nets;
     gpu_flute_nets.reserve(nets2route.size() / 100);
     int cpu_flute_net_count = 0;
+    size_t gpu_flute_pin_count = 0;
     for(int net_id : nets2route) {
-        if(use_gpu_flute && gpu_flute_takes_degree(nets[net_id].pins.size()))
+        if(use_gpu_flute && gpu_flute_takes_degree(nets[net_id].pins.size())) {
             gpu_flute_nets.emplace_back(net_id);
-        else
+            gpu_flute_pin_count += nets[net_id].pins.size();
+        } else
             ++cpu_flute_net_count;
     }
     // Launch the high-degree GPU-FLUTE batch on its own host thread so it
@@ -194,8 +198,9 @@ void Lshape_route(vector<int> &nets2route) {
         if(LOG) {
             const char *schedule = overlap_gpu_flute ? "launched overlapped" : "serial (overlap off)";
             if(gpu_flute_max_degree() == INT_MAX)
-                printf("[%5.1f] Stage 1 RSMT: GPU degree >= %d, nets=%zu, %s\n",
-                       elapsed_time(), gpu_min_degree, gpu_flute_nets.size(), schedule);
+                printf("[%5.1f] Stage 1 RSMT: GPU degree >= %d, nets=%zu, pins=%zu, %s\n",
+                       elapsed_time(), gpu_min_degree, gpu_flute_nets.size(),
+                       gpu_flute_pin_count, schedule);
             else
                 printf("[%5.1f] Stage 1 RSMT: GPU degree in [%d, %d], nets=%zu, %s\n",
                        elapsed_time(), gpu_min_degree, gpu_flute_max_degree(),
@@ -239,6 +244,14 @@ void Lshape_route(vector<int> &nets2route) {
         record_runtime_stage("  S1: RSMT, GPU FLUTE tail", gpu_join_start_time);
     }
     if(LOG) printf("[%5.1f] Stage 1 initial routing: RSMT (CPU/GPU FLUTE) ends\n", elapsed_time());
+    // Experiment hook: measure only up to RSMT construction (e.g. on designs
+    // whose full flow does not fit this GPU) and exit with the breakdown.
+    if(getenv("INSTANTGR_STOP_AFTER_RSMT") != nullptr) {
+        record_runtime_stage("Lshape route (stopped after RSMT)", Lshape_start_time);
+        runtime_breakdown();
+        fflush(stdout);
+        quick_exit(0);
+    }
     write_rsmt_depth_profile(nets2route);
 
 

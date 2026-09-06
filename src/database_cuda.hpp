@@ -122,6 +122,22 @@ bool flute_overlap_enabled() {
 // split, CPU degree <= DEGREE (9), GPU degree >= 10.
 constexpr int GPU_FLUTE_MIN_DEGREE = DEGREE + 1;
 
+// Experiment knob: INSTANTGR_GPU_FLUTE_MIN_DEGREE lowers the split so that
+// LUT-degree roots also go through GPU-FLUTE (2 sends every net to the GPU;
+// the device LUT kernel solves them directly).  Unset keeps the original 10.
+int gpu_flute_min_degree() {
+    static const int min_degree = [] {
+        const char *value = getenv("INSTANTGR_GPU_FLUTE_MIN_DEGREE");
+        if(value == nullptr || *value == '\0') return GPU_FLUTE_MIN_DEGREE;
+        char *end = nullptr;
+        const long parsed = strtol(value, &end, 10);
+        if(*end != '\0' || parsed < 2 || parsed > INT_MAX)
+            throw invalid_argument("INSTANTGR_GPU_FLUTE_MIN_DEGREE must be an integer >= 2");
+        return static_cast<int>(parsed);
+    }();
+    return min_degree;
+}
+
 // Escape hatch for pathological roots: nets above this degree skip GPU-FLUTE
 // and take the original CPU FLUTE path (its MAXD is 10000).  Unset or 0
 // disables the cap.  Kept as an experiment knob; the O(1) precomputed break
@@ -132,7 +148,7 @@ int gpu_flute_max_degree() {
         if(value == nullptr || *value == '\0' || string(value) == "0") return INT_MAX;
         char *end = nullptr;
         const long parsed = strtol(value, &end, 10);
-        if(*end != '\0' || parsed < GPU_FLUTE_MIN_DEGREE || parsed > INT_MAX)
+        if(*end != '\0' || parsed < gpu_flute_min_degree() || parsed > INT_MAX)
             throw invalid_argument("INSTANTGR_GPU_FLUTE_MAX_DEGREE must be 0 (off) or an integer >= "
                                    "the GPU-FLUTE minimum degree");
         return static_cast<int>(parsed);
@@ -142,7 +158,7 @@ int gpu_flute_max_degree() {
 
 // One predicate for both stages' CPU/GPU net partition.
 bool gpu_flute_takes_degree(int degree) {
-    return degree >= GPU_FLUTE_MIN_DEGREE && degree <= gpu_flute_max_degree();
+    return degree >= gpu_flute_min_degree() && degree <= gpu_flute_max_degree();
 }
 
 bool gpu_flute_profile_enabled() {
@@ -693,11 +709,15 @@ void construct_rsmt_gpu(vector<int> &net_ids) {
                                                 use_gpu_tree_center);
     const double solve_end_time = elapsed_time();
     assert(result.net_ids.size() == result.tree_offsets.size() - 1);
-    int mismatch_count = 0;
-    int hanan_mismatch_count = 0;
-    int gpu_tree_center_selected = 0;
-    int gpu_tree_center_fallback_count = 0;
-    for(int i = 0; i < result.net_ids.size(); ++i) {
+    atomic<int> mismatch_count(0);
+    atomic<int> hanan_mismatch_count(0);
+    atomic<int> gpu_tree_center_selected(0);
+    atomic<int> gpu_tree_center_fallback_count(0);
+    // The device solve is a fraction of a second even with every root net on
+    // the GPU; this host rebuild (tree -> graph -> finalize_rsmt) is the bulk
+    // of construct_rsmt_gpu, so it is spread over 8 threads like the CPU
+    // FLUTE loop.  Nets are disjoint; the counters above are atomic.
+    auto rebuild = [&](int i) {
         net &target = nets[result.net_ids[i]];
         unordered_map<int, int> layer;
         for(int pin : target.pins) {
@@ -738,8 +758,7 @@ void construct_rsmt_gpu(vector<int> &net_ids) {
                     break;
                 }
             if(!hanan_match) {
-                ++hanan_mismatch_count;
-                if(hanan_mismatch_count <= 16) {
+                if(++hanan_mismatch_count <= 16) {
                     printf("GPU-FLUTE Hanan mismatch: net=%d degree=%d\n",
                            result.net_ids[i], degree);
                     for(int j = 0; j < degree; ++j)
@@ -761,24 +780,36 @@ void construct_rsmt_gpu(vector<int> &net_ids) {
             const long long gpu_length = rsmt_wirelength(target.rsmt);
             const long long cpu_length = rsmt_wirelength(cpu_tree);
             if(gpu_length != cpu_length) {
-                ++mismatch_count;
-                if(mismatch_count <= 16)
+                if(++mismatch_count <= 16)
                     printf("GPU-FLUTE mismatch: net=%d degree=%d gpu=%lld cpu=%lld\n",
                            result.net_ids[i], degree, gpu_length, cpu_length);
             }
         }
         target.finalize_rsmt(layer);
+    };
+    {
+        const int net_count = result.net_ids.size();
+        atomic<int> next_chunk(0);
+        vector<thread> workers;
+        for(int t = 0; t < 8; ++t)
+            workers.emplace_back([&] {
+                constexpr int CHUNK = 1024;
+                for(int begin = next_chunk.fetch_add(CHUNK); begin < net_count;
+                    begin = next_chunk.fetch_add(CHUNK))
+                    for(int i = begin; i < min(begin + CHUNK, net_count); ++i) rebuild(i);
+            });
+        for(auto &worker : workers) worker.join();
     }
     if(validate)
         printf("GPU-FLUTE validation: Hanan=%d WL=%d / %zu high-degree nets\n",
-               hanan_mismatch_count, mismatch_count, result.net_ids.size());
+               hanan_mismatch_count.load(), mismatch_count.load(), result.net_ids.size());
     if(use_gpu_tree_center)
         printf("GPU tree-center: selected=%d, legacy fallback=%d / %zu high-degree nets\n",
-               gpu_tree_center_selected, gpu_tree_center_fallback_count, result.net_ids.size());
+               gpu_tree_center_selected.load(), gpu_tree_center_fallback_count.load(), result.net_ids.size());
     if(profile) {
         const double rebuild_time = elapsed_time() - solve_end_time;
         printf("GPU-FLUTE profile: nets=%zu, degree >= %d\n",
-               result.net_ids.size(), GPU_FLUTE_MIN_DEGREE);
+               result.net_ids.size(), gpu_flute_min_degree());
         printf("  solve wall time: %.3fs, host tree rebuild: %.3fs\n",
                result.profile.host_wall_seconds, rebuild_time);
         const double solve_wall = result.profile.host_wall_seconds;
