@@ -95,10 +95,11 @@ void runtime_breakdown() {
     if(!cudb::gpu_flute_enabled())
         snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "off");
     else if(cudb::gpu_flute_max_degree() == INT_MAX)
-        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on");
+        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (min-degree=%d)",
+                 cudb::gpu_flute_min_degree());
     else
-        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (max-degree=%d)",
-                 cudb::gpu_flute_max_degree());
+        snprintf(gpu_flute_desc, sizeof(gpu_flute_desc), "on (min-degree=%d, max-degree=%d)",
+                 cudb::gpu_flute_min_degree(), cudb::gpu_flute_max_degree());
     printf("\nconfig: gpu-flute=%s | flute-overlap=%s | wcost-presum-fusion=%s | incremental-vcost=%s (dirty limit %.0f%%) | "
            "incremental-presum=%s | incremental-commit=%s | tree-center=%s\n",
            gpu_flute_desc, cudb::flute_overlap_enabled() ? "on" : "off", fusion,
@@ -164,6 +165,14 @@ int main(int argc, char *argv[]) {
     // Runs alongside db::read(): the net split consumes finished db::nets
     // entries as the parser produces them.
     thread net_split_thread(cudb::build_nets_from_parse);
+    // Nothing touches the FLUTE LUT before Stage 1, so read it and (for
+    // GPU-FLUTE) flatten + upload it once, resident, alongside the parse.
+    // The upload is ~0.2 s regardless of design size, which on small designs
+    // is longer than the CPU FLUTE loop it would otherwise delay.
+    thread lut_thread([] {
+        readLUT("POWV9.dat", "POST9.dat");
+        if(cudb::gpu_flute_enabled()) gpu_flute::resident_lut();
+    });
     db::read(argv[cap_file_idx], argv[net_file_idx]);
 
     double stage_start = elapsed_time();
@@ -175,8 +184,8 @@ int main(int argc, char *argv[]) {
     record_runtime_stage("open output", stage_start);
 
     stage_start = elapsed_time();
-    readLUT("POWV9.dat", "POST9.dat");
-    record_runtime_stage("read FLUTE LUT", stage_start);
+    lut_thread.join();
+    record_runtime_stage("wait for FLUTE LUT read + GPU upload", stage_start);
 
     route();
 

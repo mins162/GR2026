@@ -572,6 +572,14 @@ inline Lut upload_lut(Profile* profile = nullptr) {
   return lut;
 }
 
+// The flatten + upload above costs ~0.2 s regardless of net count, which is
+// more than the whole CPU FLUTE loop on small designs.  Upload once per
+// process and keep the LUT resident (~130 MB) instead of per call.
+inline const Lut& resident_lut(Profile* profile = nullptr) {
+  static const Lut lut = upload_lut(profile);
+  return lut;
+}
+
 __device__ inline int abs_i(int value) { return value < 0 ? -value : value; }
 
 __device__ inline int group_count(int degree) {
@@ -1366,7 +1374,7 @@ inline Result solve_high_degree(const std::vector<int>& host_net_ids,
     levels.push_back(next);
   }
 
-  Lut lut = upload_lut(profile);
+  const Lut& lut = resident_lut(profile);
   for (int level_id = static_cast<int>(levels.size()) - 1; level_id >= 0; --level_id) {
     Level& level = levels[level_id];
     solve_leaf_kernel<<<blocks(level.net_count), kBlockSize>>>(
@@ -1467,7 +1475,6 @@ inline Result solve_high_degree(const std::vector<int>& host_net_ids,
                     sizeof(int) * result.root_s.size(), cudaMemcpyDeviceToHost,
                     "download root Hanan permutation", profile);
   }
-  lut.release();
   for (Level& level : levels) level.release();
   cudaFree(root_ids);
   if (profile != nullptr)
