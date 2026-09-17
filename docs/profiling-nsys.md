@@ -5,7 +5,7 @@
 > - 논문 원본에서 이 두 구간이 **wall의 33%, GPU 작업의 69%**
 > - 오히려 기존 표는 Stage 1을 빼고 세어 **과소 보고**였음
 
-- 관련 : [optimizations.md](optimizations.md) 3번, [2026-08-23-best-result.md](archive/2026-08-23-best-result.md)
+- 관련 : [optimizations.md](optimizations.md) 3번, 2026-08-23-best-result.md
 - 브랜치 : `profile/nsys-vcost-presum`
 
 ---
@@ -91,7 +91,7 @@
 - S2는 batch마다 level 수만큼 `Lshape_route_node_cuda`를 순차 launch → **DP launch 수 = 직렬 depth phases** (Σ batch max depth)
 - `SUMMARY.txt`의 `depth chain vs. time` 표 : launch 감소율 vs DP 시간 감소율, `ratio` = 시간 감소 / launch 감소
   - 1.0이면 level 고정비가 전부 (depth에 완전 비례), 0이면 노드 수만 (depth 무관)
-  - 이전 cudaEvent 측정([2026-08-24](archive/2026-08-24-s2-critical-path.md))은 ratio 0.64 — nsys로 재확인하는 것이 목적
+  - 이전 cudaEvent 측정(2026-08-24)은 ratio 0.64 — nsys로 재확인하는 것이 목적
 - `phases` 열(프로그램 자체 카운트)과 `DP lnch` 열이 다르면 트레이스 절단
 - tcsh에서도 그대로 실행 가능, 경로는 env로 : `env BENCH=... ARCH=sm_75 ./tools/nsys_profile.sh -d mempool_group`
 

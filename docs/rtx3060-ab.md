@@ -5,7 +5,7 @@
 - 코드 : `main` @ `667bc12` (워킹 트리 클린, 미추적 파일은 이 매트릭스 스크립트뿐)
 - 방법 : **바이너리 1개 + 런타임 토글**. `tools/ab_matrix.sh`가 실행, `tools/ab_summary.py`가 표 생성
 - 원본 : `ab_results_0826_143856/` (`runs.csv`, `SUMMARY.md`, `ENV.txt`, 로그 60건)
-- 이전 기록 : [2026-08-25-rtx3060-remeasure.md](archive/2026-08-25-rtx3060-remeasure.md) — **이 문서가 대체함**
+- 이전 기록 : 2026-08-25-rtx3060-remeasure.md — **이 문서가 대체함**
 
 > - `mempool_group` : base 92.47 s → opt **28.28 s (3.27×)**
 > - `bsg_chip` 2.13× · `nvdla` 2.63× · `mempool_tile_rank` 1.40×
@@ -27,7 +27,7 @@
 - 사다리 순서는 의존성이 강제한다 — `flute-overlap`은 GPU-FLUTE가 켜져야 의미가 있으므로 그 뒤에 온다
 - `l5-bgen`(= opt에서 tree-center만 off)은 두 방식이 공유하므로 한 번만 실행
 - 디자인 : `mempool_group` 전체 12 config × 3회, `bsg_chip` 앵커+LOO × 2회, `mempool_tile_rank`·`nvdla` 앵커 × 2회
-- `mempool_cluster_ranking`은 제외 — 이 카드에서 opt가 GPU-FLUTE scratch OOM, base는 S1 GPU route가 17.8배로 이상 동작 ([08-25 문서](archive/2026-08-25-rtx3060-remeasure.md) §3)
+- `mempool_cluster_ranking`은 제외 — 이 카드에서 opt가 GPU-FLUTE scratch OOM, base는 S1 GPU route가 17.8배로 이상 동작 (08-25 문서 §3)
 
 ### 측정 유효성 가드
 

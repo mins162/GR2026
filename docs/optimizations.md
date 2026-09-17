@@ -97,7 +97,7 @@
 
 ### critical path 분석 (2026-08-24) <sub>결론 : 이득은 실재, host 비용이 상쇄</sub>
 
-- 방법·수치 전체 : **[2026-08-24-s2-critical-path.md](archive/2026-08-24-s2-critical-path.md)**
+- 방법·수치 전체 : **2026-08-24-s2-critical-path.md**
 - depth 체인은 **Stage 2 전용** (S1은 batch당 커널 1개) — 직렬 phases = Σ batch max depth
 - tree-center는 phases를 **−23.6%(group) / −30.5%(cluster)** 줄이고 S2 GPU도 −0.56 / −1.11s 따라옴
   — 단 host BFS 1.19 / 3.88s(S1 몫은 단일 스레드 wall)가 상쇄해 전체 wall은 손해
@@ -236,7 +236,7 @@
 - 이를 제외한 호스트 1순위 : **DAG 구성 6.57s**, 다음 CPU FLUTE 4.94s, input 파싱 4.79s
 - DAG 구성은 세 스테이지에 분산되어 일괄 제거 곤란
 - CPU FLUTE 4.94s는 이미 overlap 중 → 추가 이득은 GPU FLUTE 커버리지 확대 필요 (현재 degree ≥ 10만 GPU)
-- **갱신 완료** : 4번 반영 후 재측정 결과는 [2026-08-23-best-result.md](archive/2026-08-23-best-result.md)
+- **갱신 완료** : 4번 반영 후 재측정 결과는 2026-08-23-best-result.md
 
 ### 트레이스 검증은 필수
 
@@ -375,7 +375,7 @@
 
 - `retired 0`, `commits per net` 2.6 / 5.5, ring 748 슬롯
 - ISPD score 1,780,669,528 vs main 1,780,725,674 (노이즈)
-- 상세 : **[2026-08-22-opt.md](archive/2026-08-22-opt.md)**
+- 상세 : **2026-08-22-opt.md**
 
 ### 다음 작업
 
@@ -405,7 +405,7 @@
 
 - `mempool_group` S2 commit 버킷만 보면 4.65s → 1.01s (−78%)
 - score는 두 디자인 다 런간 노이즈 범위 안, open·incompleted 항상 0
-- 상세 : **[archive/2026-08-25-incremental-commit.md](archive/2026-08-25-incremental-commit.md)**
+- 상세 : **archive/2026-08-25-incremental-commit.md**
 
 ---
 
@@ -427,13 +427,13 @@
 - 런타임 증가는 배치마다 새로 채우는 edge lookup table(Algorithm 3) 비용. DP의 O(L)→O(L²)
   층 열거는 알고리즘 본질 비용이라 더 줄지 않음
 - 상세 : `FLT` 브랜치의 `docs/2026-08-25-flt.md`, 격차 배경은
-  [archive/2026-08-25-journal-gap.md](archive/2026-08-25-journal-gap.md)
+  archive/2026-08-25-journal-gap.md
 
 ---
 
 ## 7. input 파싱 ∥ net 쪼개기 파이프라인 <sub>2026-08-26</sub>
 
-- [파이프라인 계획](archive/2026-08-25-pipeline-plan.md) 후보 표 2번의 실현
+- 파이프라인 계획 후보 표 2번의 실현
 - `build_cuda_database()`를 구간별로 재보니 겹칠 가치가 있는 건 net 쪼개기 루프(1.18s) 하나 —
   cap만으로 되는 grid 구축은 0.18s뿐이라 "cap 후 grid 먼저"는 무익
 - 스트리밍 파서 없이 해결 : 파서가 완성 net 개수를 atomic으로 publish,
@@ -449,7 +449,7 @@
 
 - 파서 경합 비용(group +0.2s / cluster +0.8s)을 제한 순이득
 - score : `mempool_tile_rank` 바이트 동일, `mempool_group` 노이즈 수준
-- 상세 : **[archive/2026-08-26-input-net-split-pipeline.md](archive/2026-08-26-input-net-split-pipeline.md)**
+- 상세 : **archive/2026-08-26-input-net-split-pipeline.md**
 
 ---
 

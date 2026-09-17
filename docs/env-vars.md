@@ -29,7 +29,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 
 | 변수 | 기본 | 설명 |
 | --- | --- | --- |
-| `INSTANTGR_GPU_FLUTE_MIN_DEGREE` | 10 | 이 차수 이상을 GPU FLUTE로 보냄. `2`면 전량 GPU (실험 : [2026-09-06](archive/2026-09-06-gpu-flute-all-degrees.md)) |
+| `INSTANTGR_GPU_FLUTE_MIN_DEGREE` | 10 | 이 차수 이상을 GPU FLUTE로 보냄. `2`면 전량 GPU (실험 : 2026-09-06) |
 | `INSTANTGR_GPU_FLUTE_MAX_DEGREE` | 0 (무제한) | 이 차수 초과는 CPU FLUTE로 우회 |
 | `INSTANTGR_INCREMENTAL_VCOST_MAX_DIRTY` | 0.20 | dirty-cell 리스트 크기 상한(전체 그리드 대비 비율, (0,1]) |
 | `INSTANTGR_TREE_CENTER_MIN_DEGREE` | 기본 10 | tree-center 적용 최소 차수 |
