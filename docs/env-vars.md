@@ -18,6 +18,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 | 변수 | 기본 | 설명 |
 | --- | --- | --- |
 | `INSTANTGR_GPU_FLUTE` | on | 고차수(degree ≥ 10) 넷의 FLUTE를 GPU에서 수행. `0`이면 전량 CPU FLUTE |
+| `INSTANTGR_FLUTE_OVERLAP` | on | GPU FLUTE 커널을 CPU FLUTE 루프와 동시에 실행. `0`이면 GPU → CPU 순차 (GPU-FLUTE가 켜져 있을 때만 의미) |
 | `INSTANTGR_INCREMENTAL_VCOST` | on | via cost를 dirty-cell 리스트로만 갱신 (전체 그리드 재계산 회피) |
 | `INSTANTGR_INCREMENTAL_PRESUM` | on | presum도 동일하게 증분 갱신 |
 | `INSTANTGR_GPU_BATCH_GEN` | on | batch generation을 GPU에서 수행 (journal Sec. III-D). `0`이면 CPU first-fit |
@@ -35,6 +36,7 @@ env INSTANTGR_TREE_CENTER=0 INSTANTGR_GPU_TREE_CENTER=0 ./InstantGR.opt -cap $BE
 
 고정값 (환경 변수 없음) :
 
+- 컴파일 플래그 : `-DINSTANTGR_NVTX` (nsys용 NVTX 구간, `tools/nsys_profile.sh`가 사용), `-DINSTANTGR_LEGACY_PRESUM` (wcost/presum fusion 이전 동작, A/B 대조용)
 - break score 계산 : O(1) precompute — `src/gpu_flute.hpp`의 `precompute_break_arrays()`
 
 ## 실험 (기본 off, opt-in)

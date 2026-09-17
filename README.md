@@ -1,131 +1,138 @@
 # InstantGR-2026
 
-- 목적 : InstantGR을 더 빠른 global routing으로 최적화
+GPU global router **InstantGR** (ICCAD 2024)의 runtime 최적화.
+2026 한국 대학생 반도체 설계 경진대회 출품작이며, 이 저장소가 설계보고서의 소스 코드·측정 원본이다.
 
-## 진행 상황 <sub>최신 2026-08-26</sub>
+- 출발점 : [cuhk-eda/InstantGR](https://github.com/cuhk-eda/InstantGR) @ `cfce09f` (`baseline/`에 원본 그대로 보존)
+- 대상 : ISPD 2024 GPU/ML-Enhanced Large Scale Global Routing Contest 벤치마크
+- 결과 : 같은 바이너리에서 최적화를 전부 끈 것(base) 대비 전부 켠 것(opt)이 **최대 3.27× 빠름**, 라우팅 품질은 노이즈 수준(−0.035% ~ +0.012%)
 
-| 최적화 | 결과 | 상태 |
-| --- | --- | --- |
-| FLUTE (GPU-FLUTE) | RSMT **−35~65%** | 완료 |
-| Augmented DAG depth | leaf peeling tree-center **기본 on** — S2 GPU −0.6~−1.7s, 순이득 | 완료 ([분석](docs/archive/2026-08-24-s2-critical-path.md)) |
-| vcost / presum | 전체 runtime **−30~40%** | nsys 재측정 완료 — 수치 확인됨 |
-| GPU batch generation | 전체 **−16.7%** (`mempool_group`), **−10.9%** (`mempool_cluster_ranking`) | 완료 ([정리](docs/archive/2026-08-22-opt.md)) |
-| wire demand commit 증분화 | 전체 **−17.6%** (`mempool_group`), **−8.8%** (`bsg_chip`) | 완료 ([결과](docs/archive/2026-08-25-incremental-commit.md)) |
+---
 
-- **메인 측정 : [docs/rtx3060-ab.md](docs/rtx3060-ab.md)** — RTX 3060, 최적화 6개를
-  같은 바이너리에서 하나씩 켜고 끈 60런 매트릭스. 전체 배율·기여별 마진·항목별 분해가 모두 여기 있다
+## 1. 결과
 
-| 디자인 | 전부 off | 전부 on | 배율 |
+RTX 3060 12GB, 최적화 7개를 런타임 스위치로 하나씩 켜고 끈 60런 매트릭스. 전체 표·재현성·품질은 **[docs/rtx3060-ab.md](docs/rtx3060-ab.md)**.
+
+| 디자인 | base | opt | 배율 |
 | --- | ---: | ---: | ---: |
-| `mempool_group` | 92.47s | **28.28s** | **3.27×** |
-| `nvdla` | 8.45s | 3.21s | 2.63× |
-| `bsg_chip` | 24.51s | 11.52s | 2.13× |
-| `mempool_tile_rank` | 3.27s | 2.34s | 1.40× |
+| `mempool_group` | 92.47 s | **28.28 s** | **3.27×** |
+| `nvdla` | 8.45 s | 3.21 s | 2.63× |
+| `bsg_chip` | 24.51 s | 11.52 s | 2.13× |
+| `mempool_tile_rank` | 3.27 s | 2.34 s | 1.40× |
 
-- ISPD score는 노이즈 수준 (프로그램 report 기준 −0.035% ~ +0.012%) — evaluator 재확인은 위 문서 §5
-- `mempool_cluster_ranking`은 12GB 카드에서 opt가 OOM으로 못 돈다 → 위 매트릭스에서 제외.
-  이전 환경(TITAN RTX) 수치는 [docs/archive/2026-08-23-best-result.md](docs/archive/2026-08-23-best-result.md)
-- 측정 절차 : [docs/measure-runtime.md](docs/measure-runtime.md)
-- 상세 : **[docs/optimizations.md](docs/optimizations.md)**, 지난 기록 : **[docs/archive/](docs/archive/)**
+- `mempool_cluster_ranking`(10.6M net)은 12GB 카드에서 opt가 GPU-FLUTE scratch OOM → 매트릭스에서 제외. TITAN RTX 24GB 결과는 [docs/archive/2026-08-23-best-result.md](docs/archive/2026-08-23-best-result.md)
+- 품질 : 프로그램 자체 report 기준 base 대비 −0.035% ~ +0.012%, 전 런 open net 0 · incomplete 0 ([rtx3060-ab.md §5](docs/rtx3060-ab.md))
 
----
+## 2. 기여
 
-## 개요
+`mempool_group`에서 opt로부터 해당 기여 하나만 껐을 때 늘어나는 시간(leave-one-out 마진)과 전체 절감(64.19 s) 대비 비중.
+각 항목의 설계·시행착오·검증은 **[docs/optimizations.md](docs/optimizations.md)** 의 해당 절에 있다.
 
-- `src/` : 최적화 버전
-- `baseline/` : 비교용 논문 원본
-- 셸 : **tcsh 기준** (bash/zsh는 `setenv A B` → `export A=B`)
-- 모든 명령 : 리포지토리 루트 기준 상대 경로
-- `$BENCH` : `.cap` / `.net` 벤치마크 디렉터리
-- `$ARCH` : GPU 아키텍처 (TITAN RTX → `sm_75`)
-- 벤치마크 다운로드 : [Google Drive](https://drive.google.com/drive/folders/1afrsbeS_KuSeHEVfuQOuLWPuuZqlDVlw?hl=ko)
+| # | 기여 | 출처 | 마진 | 비중 | 설명 |
+| ---: | --- | --- | ---: | ---: | --- |
+| 1 | **incremental vcost / presum** — batch가 건드린 dirty cell·track만 재계산 | 우리 것 | **+47.08 s** | **73%** | optimizations.md §3 |
+| 2 | **incremental wire-demand commit** — 1과 같은 원리를 commit 커널에 적용 | 우리 것 | +6.89 s | 11% | §5 |
+| 3 | **GPU batch generation 재설계** — 논문의 우선순위 중재는 계승, 스케줄링은 window/wavefront + net당 warp로 재설계 | TCAD §III-D 계승 + 재설계 | +4.14 s | 6% | §4 |
+| 4 | **CPU/GPU FLUTE 오버랩** — 고차수 net은 GPU, 저차수 net은 CPU에서 동시에 처리 | 우리 것 | +1.90 s | 3% | §1 |
+| 5 | GPU-FLUTE 알고리즘 도입 (+ break score O(1) precompute) | ICCAD 2022 논문 구현 | +5.58 s | 9% | §1 |
+| 6 | tree-center root 선택 (leaf peeling) | 우리 것 | +0.55 s | 1% | §2 |
+| 7 | input 파싱 ∥ net 분할 파이프라인 | 우리 것 | pre-route −0.9 s (매트릭스 외) | — | §7 |
 
-```bash
-setenv BENCH /path/to/benchmarks
-setenv ARCH sm_75
-```
-
----
-
-## 0. GPU 선택
-
-- 빈 GPU 확인 : `nvidia-smi`
-- GPU 지정 : `CUDA_VISIBLE_DEVICES`
-- 번호 : `nvidia-smi` 인덱스, 여러 장은 `0,1`
-- 지정 후 프로그램 내부에서는 항상 device 0
-- `-arch` : 실제 사용 GPU와 일치시킬 것
-
-- 세션 전체 적용 :
-
-```bash
-setenv CUDA_VISIBLE_DEVICES 0
-```
-
-- 한 번만 적용 (tcsh는 `VAR=val cmd` 문법 없음 → `env` 사용) :
-
-```bash
-env CUDA_VISIBLE_DEVICES=0 ./InstantGR.opt -cap $BENCH/mempool_cluster_ranking.cap -net $BENCH/mempool_cluster_ranking.net -out test.out
-```
+- 1 + 2 = 절감의 84%가 한 가지 원리 — "batch는 grid의 P50 1.2%만 건드리는데 baseline은 매번 100%를 재계산한다"
+- 3은 `bsg_chip`에서 이득 0 (−0.02 s, 런 간 폭 안). batch generation이 wall에서 차지하는 비중이 큰 디자인에서만 이득 ([rtx3060-ab.md §4](docs/rtx3060-ab.md))
+- 미병합 : FLT (Flexible Layer Transition, TCAD §V) — 구현했으나 score −0.256% / 런타임 +11.9%라 기본 빌드에 넣지 않음 (optimizations.md §6)
 
 ---
 
-## 1. 빌드
+## 3. 저장소 구성
 
-- 최적화 버전 : `src/` → `run/InstantGR.opt`
+| 경로 | 내용 |
+| --- | --- |
+| `src/` | 최적화 버전. 진입점 `main.cpp`, 신규 파일은 `gpu_flute.hpp` · `gpu_batch_gen.hpp` · `nvtx_profile.hpp` |
+| `baseline/` | upstream 원본 (`UPSTREAM_COMMIT.txt`), A/B 대조용. 수정 없음 |
+| `run/` | evaluator 소스, FLUTE lookup table (`POWV9.dat`, `POST9.dat`) |
+| `tools/` | `ab_matrix.sh` + `ab_summary.py` (A/B 매트릭스), `nsys_profile.sh` + `nsys_summarize.py` (Nsight Systems 프로파일) |
+| `run_ab_no_treecenter.sh` | opt vs 논문 baseline 바이너리 A/B 한 번에 실행 |
+| `docs/` | 아래 §6 |
+| `.github/workflows/compile.yml` | GPU 없는 CI에서 `src/`·`baseline/`·evaluator 컴파일만 검증 |
+
+---
+
+## 4. 빌드 · 실행 · 평가
+
+- 요구 : CUDA toolkit 12.x (`nvcc`), g++ (C++17), NVIDIA GPU
+- 벤치마크 : [Google Drive](https://drive.google.com/drive/folders/1afrsbeS_KuSeHEVfuQOuLWPuuZqlDVlw?hl=ko) 에서 `.cap` / `.net` 을 받아 한 디렉터리에 둔다
+- 아래는 bash 기준. tcsh는 `export A=B` → `setenv A B`, 한 번만 적용은 `env A=B cmd`
+
+```bash
+export BENCH=/path/to/benchmarks   # .cap / .net 디렉터리
+export ARCH=sm_86                  # GPU에 맞게 (RTX 3060 sm_86, TITAN RTX sm_75)
+```
+
+빌드 :
 
 ```bash
 cd src && nvcc main.cpp -o ../run/InstantGR.opt -std=c++17 -x cu -O3 -arch=$ARCH
 ```
 
-- 논문 baseline : `baseline/src/` → `baseline/run/InstantGR`
-
 ```bash
 cd baseline/src && nvcc main.cpp -o ../run/InstantGR -std=c++17 -x cu -O3 -arch=$ARCH
 ```
 
-- evaluator : 최초 1회만
-
 ```bash
-cd run && g++ -O3 -std=c++17 -o evaluator evaluator.cpp && chmod +x ./evaluator
+cd run && g++ -O3 -std=c++17 -o evaluator evaluator.cpp
 ```
 
----
-
-## 2. 실행
+실행 (최적화 전부 on이 기본값) :
 
 ```bash
-cd run && time ./InstantGR.opt -cap $BENCH/mempool_cluster_ranking.cap -net $BENCH/mempool_cluster_ranking.net -out test.out |& tee test.log
+cd run && ./InstantGR.opt -cap $BENCH/mempool_group.cap -net $BENCH/mempool_group.net -out mempool_group.out
 ```
 
----
-
-## 3. 평가
+평가 :
 
 ```bash
-cd run && ./evaluator $BENCH/mempool_cluster_ranking.cap $BENCH/mempool_cluster_ranking.net test.out
+cd run && ./evaluator $BENCH/mempool_group.cap $BENCH/mempool_group.net mempool_group.out
 ```
 
----
+- 최적화를 끄려면 환경 변수 (예: `INSTANTGR_INCREMENTAL_VCOST=0`). 전체 목록은 [docs/env-vars.md](docs/env-vars.md)
+- GPU 지정 : `CUDA_VISIBLE_DEVICES=0`
 
-## 4. A/B 자동 실행
+## 5. 재현
 
-- 동작 : 빌드 → opt/baseline 양쪽 실행 → evaluator → 요약표
-- 기본 디자인 : `mempool_tile_rank`, `mempool_group`, `mempool_cluster_ranking`, `bsg_chip`
-- 디자인 지정 : `./run_ab_no_treecenter.sh bsg_chip`
-- 결과 : `ab_results_MMDD_HHMMSS/` 에 로그·출력·eval 저장
+§1 매트릭스 (바이너리 1개 + 런타임 토글, 결과는 `ab_results_MMDD_HHMMSS/SUMMARY.md`) :
 
 ```bash
-env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh
+env BENCH=$BENCH ARCH=$ARCH ./tools/ab_matrix.sh
 ```
 
----
+opt vs 논문 baseline 바이너리 :
 
-## 5. 참고
+```bash
+env BENCH=$BENCH ARCH=$ARCH ./run_ab_no_treecenter.sh mempool_group
+```
 
-- 환경 변수 전체 : [docs/env-vars.md](docs/env-vars.md)
-- runtime 측정 절차 (재사용) : [docs/measure-runtime.md](docs/measure-runtime.md)
-- 최신 결과 : [docs/rtx3060-ab.md](docs/rtx3060-ab.md)
-- nsys 프로파일링 (vcost/presum 검증) : [docs/profiling-nsys.md](docs/profiling-nsys.md)
-- 서버 전용 경로·명령 : [docs/my-setup.md](docs/my-setup.md)
-- 논문 원본 : [InstantGR.pdf](docs/papers/InstantGR.pdf) (ICCAD), [InstantGR(Journal).pdf](docs/papers/InstantGR%28Journal%29.pdf) (TCAD, 확장판), [GPU_FLUTE.pdf](docs/papers/GPU_FLUTE.pdf)
-- baseline upstream 커밋 : `baseline/UPSTREAM_COMMIT.txt`
+- 측정 원칙(연속 실행, 호스트 타이머와 nsys의 역할 분담) : [docs/measure-runtime.md](docs/measure-runtime.md)
+- GPU 커널 단위 확인 : [docs/profiling-nsys.md](docs/profiling-nsys.md)
+
+## 6. 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| [docs/optimizations.md](docs/optimizations.md) | 기여별 설계 · 시행착오 · 결과 · 검증 (본문) |
+| [docs/rtx3060-ab.md](docs/rtx3060-ab.md) | 기준 측정 — RTX 3060 60런 A/B 매트릭스 |
+| [docs/env-vars.md](docs/env-vars.md) | 런타임 스위치 · 튜닝 노브 · 검증 옵션 |
+| [docs/measure-runtime.md](docs/measure-runtime.md) | runtime 측정 절차 |
+| [docs/profiling-nsys.md](docs/profiling-nsys.md) | Nsight Systems로 vcost/presum 재측정 |
+| [docs/archive/](docs/archive/) | 날짜별 실험 기록 (이전 환경 TITAN RTX 수치 포함) |
+
+## 7. 참고 문헌
+
+- Shiju Lin, Liang Xiao, Jinwei Liu, Evangeline F. Y. Young, ["InstantGR: Scalable GPU Parallelization for Global Routing"](https://shijulin.github.io/files/1239_Final_Manuscript.pdf), ICCAD 2024 — 기반 코드 ([cuhk-eda/InstantGR](https://github.com/cuhk-eda/InstantGR))
+- InstantGR 확장판 (TCAD, vol. 45, no. 1, pp. 441–452, 2026) — GPU batch generation(§III-D)과 FLT(§V)의 근거
+- "GPU-Accelerated Rectilinear Steiner Tree Generation", ICCAD 2022 — GPU-FLUTE 알고리즘
+- ISPD 2024 Contest: GPU/ML-Enhanced Large Scale Global Routing — 벤치마크 · evaluator
+
+## 라이선스
+
+BSD 3-Clause. upstream InstantGR (CUHK EDA)의 라이선스를 그대로 따른다 — [LICENSE](LICENSE).

@@ -80,6 +80,19 @@
 
 - config 3종을 모두 실행, `nsys_results_MMDD_HHMMSS/`에 트레이스·CSV·`SUMMARY.txt` 생성
 - 자주 쓰는 옵션 : `-c incr -c full` (config 지정), `--cpu` (CPU 샘플링), `--no-build`
+
+### tree-center : depth에 비례해서 줄어드는가
+
+```bash
+./tools/nsys_profile.sh -d mempool_group -c nocenter -c center
+```
+
+- `nocenter` / `center` = 최적화 전부 on, `INSTANTGR_TREE_CENTER`만 `0` / `cpu`
+- S2는 batch마다 level 수만큼 `Lshape_route_node_cuda`를 순차 launch → **DP launch 수 = 직렬 depth phases** (Σ batch max depth)
+- `SUMMARY.txt`의 `depth chain vs. time` 표 : launch 감소율 vs DP 시간 감소율, `ratio` = 시간 감소 / launch 감소
+  - 1.0이면 level 고정비가 전부 (depth에 완전 비례), 0이면 노드 수만 (depth 무관)
+  - 이전 cudaEvent 측정([2026-08-24](archive/2026-08-24-s2-critical-path.md))은 ratio 0.64 — nsys로 재확인하는 것이 목적
+- `phases` 열(프로그램 자체 카운트)과 `DP lnch` 열이 다르면 트레이스 절단
 - tcsh에서도 그대로 실행 가능, 경로는 env로 : `env BENCH=... ARCH=sm_75 ./tools/nsys_profile.sh -d mempool_group`
 
 요약만 다시 보기 / 타임라인 보기 :

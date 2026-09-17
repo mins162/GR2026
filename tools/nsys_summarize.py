@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Turn `nsys stats` CSV dumps into the one table the vcost/presum question needs.
+"""Turn `nsys stats` CSV dumps into the tables the vcost/presum and tree-center
+depth questions need.
 
 Reads a directory produced by tools/nsys_profile.sh and, for every
 design x config it finds, prints where GPU time actually went: per-kernel time
@@ -60,7 +61,8 @@ def read_stats(path):
     header = rows[0]
     # kernel reports call it "Name"; the NVTX reports call it "Range".
     i_name = find_col(header, "name", "range")
-    i_time = find_col(header, "total time", "duration")
+    # nvtx_gpu_proj_sum calls it "Total Proj Time (ns)".
+    i_time = find_col(header, "total time", "proj time", "duration")
     i_num = find_col(header, "instances", "num calls", "count")
     if i_name is None or i_time is None:
         return []
@@ -86,7 +88,8 @@ STAGE_ROW = re.compile(r"^(.*?\S)\s+([\d.]+) s\s+([\d.]+) %\s*$")
 
 def read_log(path):
     """Wall clock, grid geometry and config line from the router's own stdout."""
-    info = {"wall": None, "grid": None, "config": None, "batches": [], "stages": []}
+    info = {"wall": None, "grid": None, "config": None, "batches": [], "stages": [],
+            "depth": None}
     if not os.path.exists(path):
         return info
     with open(path, errors="replace") as f:
@@ -105,6 +108,13 @@ def read_log(path):
                 nums = re.findall(r"\d+", line)
                 if len(nums) >= 2:
                     info["batches"].append(int(nums[1]))
+            # "Stage 2 augmented-DAG critical path: ... serialized depth
+            # phases=14294, p50/p90/p99/max=4/46/59/71, ..." -- the program's
+            # own count of the level chain, to cross-check the DP launch count.
+            elif line.startswith("Stage 2 augmented-DAG critical path"):
+                m = re.search(r"phases=(\d+), p50/p90/p99/max=(\d+)/(\d+)/(\d+)/(\d+)", line)
+                if m:
+                    info["depth"] = tuple(int(x) for x in m.groups())
             else:
                 m = STAGE_ROW.match(line.rstrip())
                 if m and m.group(1) != "total":
@@ -210,7 +220,58 @@ def report(out_dir, tag):
             for name, total, num in sorted(nrows, key=lambda r: -r[1])[:14]:
                 print("  %-46s %s s %12d" % (name[:46], fmt_s(total), num))
     print()
-    return {"tag": tag, "wall": wall, "gpu": gpu_ns, "buckets": per_bucket}
+    return {"tag": tag, "wall": wall, "gpu": gpu_ns, "buckets": per_bucket,
+            "depth": log["depth"], "nvtx": dict((n, (t, c)) for n, t, c in nrows) if nvtx and nrows else {}}
+
+
+def depth_table(results):
+    """Does Stage 2 time fall in proportion to the depth chain?
+
+    One Lshape_route_node_cuda launch per DAG level per batch, so the DP launch
+    count *is* the serialized depth (sum over batches of the batch's max depth).
+    The run with the most launches is the reference; the others show how much of
+    the launch cut turned into a time cut.  A ratio near 1 means the DP cost is
+    per-level (fixed cost per launch), near 0 means it is per-node and the depth
+    does not matter.
+    """
+    rows = []
+    for r in results:
+        dp = r["buckets"].get("DP route", (0, 0))
+        tb = r["buckets"].get("traceback", (0, 0))
+        if dp[1] == 0:
+            continue
+        rows.append((r, dp, tb))
+    if len(rows) < 2:
+        return
+    ref = max(rows, key=lambda x: x[1][1])
+    print("=" * 78)
+    print("depth chain vs. time (tree-center question)")
+    print("=" * 78)
+    print("  %-26s %8s %8s %8s %7s %9s %8s %7s" % (
+        "run", "DP lnch", "DP time", "us/lnch", "phases", "p50/p99", "TB time", "S2 GPU"))
+    for r, dp, tb in rows:
+        d = r["depth"]
+        s2 = sum(t for n, (t, c) in r["nvtx"].items()
+                 if n.split(":")[-1] in ("S2/bottom_up_DP", "S2/traceback", "S2/commit",
+                                          "S2/ripup", "S2/update_cost", "S2/compute_presum"))
+        print("  %-26s %8d %7.2fs %8.1f %7s %9s %7.2fs %7s" % (
+            r["tag"], dp[1], dp[0] / 1e9, dp[0] / 1e3 / dp[1],
+            d[0] if d else "-", "%d/%d" % (d[1], d[3]) if d else "-",
+            tb[0] / 1e9, ("%.2fs" % (s2 / 1e9)) if s2 else "-"))
+    print()
+    print("  relative to %s (most launches):" % ref[0]["tag"])
+    for r, dp, tb in rows:
+        if r is ref[0]:
+            continue
+        dl = 1 - dp[1] / ref[1][1]
+        dt = 1 - dp[0] / ref[1][0]
+        dtb = 1 - tb[0] / ref[2][0] if ref[2][0] else 0
+        print("  %-26s launches %+6.1f%%   DP time %+6.1f%%   traceback %+6.1f%%   ratio %.2f" % (
+            r["tag"], -100 * dl, -100 * dt, -100 * dtb, dt / dl if dl else 0))
+    print()
+    print("  ratio = DP-time cut / launch cut.  1.0 = fully proportional to depth")
+    print("  (per-level fixed cost dominates); 0.0 = per-node work only.  Check")
+    print("  'phases' equals 'DP lnch' -- if not, the trace was truncated.")
 
 
 def main():
@@ -229,6 +290,8 @@ def main():
     results = [r for r in (report(out_dir, t) for t in tags) if r]
     if len(results) < 2:
         return 0
+
+    depth_table(results)
 
     print("=" * 78)
     print("vcost + presum, side by side")

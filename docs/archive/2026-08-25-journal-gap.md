@@ -1,6 +1,6 @@
 # 2026-08-25 — 저널 논문 대비 미구현 항목
 
-- 기준 논문 : `docs/papers/InstantGR(Journal).pdf` (TCAD 2026, vol.45 no.1 pp.441–452)
+- 기준 논문 : InstantGR 확장판 (TCAD 2026, vol.45 no.1 pp.441–452)
 - 기준 코드 : `baseline/` = ICCAD'24 open source (`cuhk-eda/InstantGR @ cfce09f`) = 논문의 **InstantGR 1.0**
 - 논문의 InstantGR **2.0** = 1.0 + 저널 신규 기법 → 우리 작업은 1.0에서 출발했으므로
   저널 기여 5개를 코드와 대조

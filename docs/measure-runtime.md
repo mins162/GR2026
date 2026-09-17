@@ -43,11 +43,11 @@ setenv CUDA_VISIBLE_DEVICES 0
 ```
 
 ```bash
-setenv REPO /home/shkim/6_Internship/mskim/InstantGR-2026
+setenv REPO /path/to/InstantGR-2026
 ```
 
 ```bash
-setenv BENCH /home/shkim/6_Internship/mskim/benchmarks/benchmarks
+setenv BENCH /path/to/benchmarks
 ```
 
 ```bash

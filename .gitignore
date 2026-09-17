@@ -33,3 +33,6 @@ nsys_results_*/
 
 # 벤치마크 입력 (Google Drive에서 별도 다운로드, 수백 MB~GB)
 benchmarks/
+
+# 대회 서류 · 개인 서버 메모 · 논문 PDF (공개 저장소에 올리지 않음)
+contest/

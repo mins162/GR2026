@@ -27,7 +27,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # design:configset:repeats
 PLAN="${PLAN:-mempool_group:full:3 bsg_chip:loo:2 mempool_tile_rank:anchor:2 nvdla:anchor:2}"
 
-# nvcc lives in a home-installed toolkit on this server (docs/my-setup.md).
+# nvcc lives in a home-installed toolkit on this server (intern server, ~/cuda-12.6).
 command -v nvcc >/dev/null 2>&1 || export PATH="$HOME/cuda-12.6/bin:$PATH"
 
 # Knob order: gpu-flute, flute-overlap, gpu-batch-gen, incremental-vcost,

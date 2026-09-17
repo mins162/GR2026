@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Nsight Systems profiling for the "does vcost / presum actually cost anything?"
-# question.
+# Nsight Systems profiling for two questions: "does vcost / presum actually
+# cost anything?" (configs incr/full/paper) and "does Stage 2 time fall in
+# proportion to the DAG depth that tree-center removes?" (configs
+# center/nocenter).
 #
 # The numbers in docs/optimizations.md come from cudaEvent pairs that the code
 # itself records.  Reading such a pair needs cudaEventSynchronize(), which
@@ -13,6 +15,7 @@
 #   tools/nsys_profile.sh                          # default design, all configs
 #   tools/nsys_profile.sh -d mempool_group
 #   tools/nsys_profile.sh -d mempool_tile_rank -c incr -c full
+#   tools/nsys_profile.sh -d mempool_group -c nocenter -c center   # depth question
 #   tools/nsys_profile.sh --cpu                    # add CPU sampling
 #
 # Env: BENCH (benchmark dir), ARCH (sm_XX).
@@ -38,7 +41,11 @@ Options:
                   incr   src/ with incremental vcost+presum on   (current opt)
                   full   src/ with both off -> full-grid rebuild (paper behavior)
                   paper  baseline/ binary, untouched paper source
+                  nocenter  src/, every optimization on, tree-center off
+                  center    src/, every optimization on, tree-center cpu
                 (default: incr full paper)
+                nocenter/center differ in one knob only; the DP-launch count
+                in the kernel table is the serialized depth-chain length.
   --cpu         also sample the CPU (answers "is the host the bottleneck?")
   --gpu-metrics sample SM/DRAM utilization counters (needs profiling permission)
   --no-build    reuse existing binaries
@@ -74,6 +81,7 @@ resolve_nsys() {
     done < <(ls -d /opt/nvidia/nsight-systems/*/target-linux-x64/nsys \
                    /opt/nvidia/nsight-systems-cli/*/target-linux-x64/nsys \
                    /usr/local/cuda*/nsight-systems-*/target-linux-x64/nsys \
+                   "$HOME"/nsys/opt/nvidia/nsight-systems*/*/target-linux-x64/nsys \
                    2>/dev/null | sort -Vr)
     for c in "${candidates[@]}"; do
         command -v "$c" > /dev/null 2>&1 || continue
@@ -91,7 +99,8 @@ NSYS_BIN="$(resolve_nsys)" || {
     command -v nsys > /dev/null 2>&1 && nsys --version >&2 || true
     echo "  installed copies:" >&2
     ls -d /opt/nvidia/nsight-systems*/*/target-linux-x64/nsys \
-          /usr/local/cuda*/nsight-systems-*/target-linux-x64/nsys 2>/dev/null >&2 \
+          /usr/local/cuda*/nsight-systems-*/target-linux-x64/nsys \
+          "$HOME"/nsys/opt/nvidia/nsight-systems*/*/target-linux-x64/nsys 2>/dev/null >&2 \
         || echo "    (none found; Nsight Systems is not installed)" >&2
     echo "  point at one explicitly with:  env NSYS=/full/path/to/nsys $0 ..." >&2
     exit 1
@@ -160,6 +169,15 @@ run_config() {
         full)  workdir="$ROOT/run"; bin=./InstantGR.nvtx
                envs=(INSTANTGR_GPU_FLUTE=1 INSTANTGR_INCREMENTAL_VCOST=0 INSTANTGR_INCREMENTAL_PRESUM=0);;
         paper) workdir="$ROOT/baseline/run"; bin=./InstantGR.profile; envs=();;
+        # Every knob set explicitly (same set as tools/ab_matrix.sh "opt"), so a
+        # leftover setenv in the tcsh session cannot flip one silently.
+        # INSTANTGR_TREE_CENTER takes 'cpu' or '0', not 1/0.
+        nocenter|center)
+               workdir="$ROOT/run"; bin=./InstantGR.nvtx
+               envs=(INSTANTGR_GPU_FLUTE=1 INSTANTGR_FLUTE_OVERLAP=1 INSTANTGR_GPU_BATCH_GEN=1
+                     INSTANTGR_INCREMENTAL_VCOST=1 INSTANTGR_INCREMENTAL_PRESUM=1
+                     INSTANTGR_INCREMENTAL_COMMIT=1 INSTANTGR_GPU_TREE_CENTER=0
+                     INSTANTGR_TREE_CENTER=$([ "$config" = center ] && echo cpu || echo 0));;
         *) echo "unknown config: $config" >&2; return 2;;
     esac
     for f in "$cap" "$net"; do
