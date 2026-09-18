@@ -1,5 +1,3 @@
-# InstantGR-2026
-
 Runtime optimizations on top of [InstantGR](https://github.com/cuhk-eda/InstantGR) (ICCAD 2024), a GPU global router for the ISPD 2024 benchmarks.
 `src/` is the optimized router, `baseline/` is the upstream code at `cfce09f` kept unchanged for comparison.
 
